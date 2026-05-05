@@ -507,13 +507,7 @@ function render() {
   }
 
   if (view.tab === "home") activateCurrentWeekTracker();
-  const newProbationAlerts = ensureProbationAlertsForCurrentTerm();
-  if (!view.modal && newProbationAlerts.length) {
-    view.modal = { type: "email", alertId: newProbationAlerts[0].id };
-  } else if (!view.modal) {
-    const pendingEmail = state.alerts.slice().reverse().find((alert) => !alert.acknowledged);
-    if (pendingEmail) view.modal = { type: "email", alertId: pendingEmail.id };
-  }
+  ensureProbationAlertsForCurrentTerm();
 
   const visibleTabs = allowedTabs(member);
   if (view.tab !== "home" && !visibleTabs.some((tab) => tab.id === view.tab)) {
@@ -569,11 +563,11 @@ function renderLogin() {
         </div>
         <label class="field">
           <span>School Email</span>
-          <input name="email" type="email" autocomplete="email" required value="frboone1@buffs.wtamu.edu">
+          <input name="email" type="email" autocomplete="email" required>
         </label>
         <label class="field">
           <span>Buff ID</span>
-          <input name="buffId" type="password" inputmode="numeric" autocomplete="current-password" required value="1123822">
+          <input name="buffId" type="password" inputmode="numeric" autocomplete="current-password" required>
         </label>
         <label class="check-row">
           <input name="remember" type="checkbox">
@@ -2262,7 +2256,6 @@ function bindAttendanceEvents(member) {
 
   document.querySelector("#attendanceForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
-    const alertCount = state.alerts.length;
     const form = new FormData(event.currentTarget);
     const record = createAttendanceRecord(form, member);
     const existingIndex = state.attendanceRecords.findIndex(
@@ -2274,8 +2267,6 @@ function bindAttendanceEvents(member) {
     if (activeEvent?.eventId === record.eventId) activeEvent.date = record.date;
     for (const impact of record.points) maybeCreateProbationAlert(impact.memberId);
     saveState();
-    const newestAlert = state.alerts.length > alertCount ? state.alerts[state.alerts.length - 1] : null;
-    if (newestAlert) view.modal = { type: "email", alertId: newestAlert.id };
     render();
   });
 }
@@ -2296,7 +2287,6 @@ function bindPointEvents(member) {
   updatePointFormFields();
   document.querySelector("#pointForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
-    const alertCount = state.alerts.length;
     const form = new FormData(event.currentTarget);
     const record = createPointRecord(form, member, view.pointMode);
     state.pointRecords.push(record);
@@ -2304,8 +2294,6 @@ function bindPointEvents(member) {
     maybeCreateProbationAlert(record.memberId);
     saveState();
     view.pointMode = null;
-    const newestAlert = state.alerts.length > alertCount ? state.alerts[state.alerts.length - 1] : null;
-    if (newestAlert) view.modal = { type: "email", alertId: newestAlert.id };
     render();
   });
 }
@@ -2939,6 +2927,22 @@ function createPointRecord(form, recordingMember, type) {
   };
 }
 
+
+function dispatchPendingEmails() {
+  const pending = state.alerts.filter((alert) => !alert.emailDispatchedAt);
+  if (!pending.length) return;
+  autoDispatchAlertEmail(pending[0]);
+}
+
+function autoDispatchAlertEmail(alert) {
+  if (!alert || alert.emailDispatchedAt) return;
+  alert.acknowledged = true;
+  alert.emailOpenedAt = new Date().toISOString();
+  alert.emailDispatchedAt = alert.emailOpenedAt;
+  saveState();
+  window.location.assign(alertMailto(alert));
+}
+
 function maybeCreateDiscretionAlert(record) {
   if (!record.actionId?.startsWith("exec-discretion")) return;
   const member = state.members.find((item) => item.id === record.memberId);
@@ -2952,6 +2956,7 @@ function maybeCreateDiscretionAlert(record) {
     acknowledged: false,
   };
   state.alerts.push(alert);
+  autoDispatchAlertEmail(alert);
   return alert;
 }
 
@@ -2976,6 +2981,7 @@ function maybeCreateProbationAlert(memberId) {
     acknowledged: false,
   };
   state.alerts.push(alert);
+  autoDispatchAlertEmail(alert);
   return alert;
 }
 
@@ -2996,5 +3002,6 @@ function ensureProbationAlertsForCurrentTerm() {
 
 document.addEventListener("DOMContentLoaded", () => {
   repairLoginCredentials(true);
+  dispatchPendingEmails();
   render();
 });
