@@ -88,6 +88,7 @@
       );
     } catch (error) {
       console.error("Firebase cloud initialization failed:", error);
+      throw error;
     }
   }
 
@@ -101,6 +102,23 @@
         throw error;
       }
     }
+  }
+
+  function describeFirebaseError(error) {
+    const code = error?.code || "unknown";
+    const messages = {
+      "auth/invalid-email": "The school email address is not valid.",
+      "auth/invalid-credential": "The Firebase account exists, but the Buff ID is not its current password.",
+      "auth/wrong-password": "The Firebase account exists, but the Buff ID is not its current password.",
+      "auth/user-disabled": "This Firebase account has been disabled.",
+      "auth/weak-password": "The Buff ID is too short to use as a Firebase password. This member needs an account setup password.",
+      "auth/email-already-in-use": "A Firebase account already exists for this email, but it could not be signed in with the supplied Buff ID.",
+      "auth/operation-not-allowed": "Firebase Email/Password sign-in is not enabled for this project.",
+      "permission-denied": "Firebase reached Firestore, but the current security rules denied access. Make sure the published rules allow authenticated users to read/write chapters/alpha-psi.",
+      "failed-precondition": "Firestore is not ready for this request yet. Check that the Firestore database was created successfully.",
+      "unavailable": "Firebase is temporarily unavailable. Check the internet connection and try again.",
+    };
+    return `${messages[code] || `Firebase error: ${code}.`} (code: ${code})`;
   }
 
   document.addEventListener(
@@ -151,12 +169,7 @@
         window.location.reload();
       } catch (error) {
         console.error("Firebase login failed:", error);
-        if (status) {
-          status.textContent =
-            error.code === "auth/wrong-password"
-              ? "The account exists, but its Firebase password is not the Buff ID."
-              : "Cloud sign-in failed. Check the email/Buff ID and try again.";
-        }
+        if (status) status.textContent = describeFirebaseError(error);
       }
     },
     true,
@@ -193,7 +206,11 @@
 
   firebaseAuth.onAuthStateChanged(async (user) => {
     if (user) {
-      await initializeRealtimeSync(user);
+      try {
+        await initializeRealtimeSync(user);
+      } catch (error) {
+        console.error("Firebase auth-state initialization failed:", error);
+      }
     }
   });
 })();
