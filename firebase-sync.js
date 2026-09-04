@@ -7,6 +7,8 @@
   if (!firebaseAuth || !firebaseDb) return;
 
   const cloudRef = firebaseDb.collection("chapters").doc("alpha-psi");
+  const enrollmentIndexRef = firebaseDb.collection("chapterEnrollmentIndexes").doc("alpha-psi");
+  const enrollmentsRef = firebaseDb.collection("chapterEnrollments");
   let applyingCloudState = false;
   let writeTimer = null;
   let unsubscribe = null;
@@ -20,12 +22,25 @@
   }
 
   const normalizeEmail = (value) => String(value || "").trim().toLowerCase();
-  const normalizeBuffId = (value) => String(value || "").trim();
+  const normalizeBuffId = (value) =>
+    String(value || "")
+      .trim()
+      .replace(/[^a-z0-9]/gi, "");
 
   function hasAppSession() {
     return Boolean(
       localStorage.getItem(SESSION_KEY) || sessionStorage.getItem(SESSION_KEY),
     );
+  }
+
+  function readAppSession() {
+    try {
+      return JSON.parse(
+        localStorage.getItem(SESSION_KEY) || sessionStorage.getItem(SESSION_KEY) || "null",
+      );
+    } catch {
+      return null;
+    }
   }
 
   function readLocalState() {
@@ -68,6 +83,84 @@
     ) || null;
   }
 
+  function currentLocalMember(state) {
+    const appSession = readAppSession();
+    if (!appSession?.memberId) return null;
+    return (state?.members || []).find((member) => member.id === appSession.memberId) || null;
+  }
+
+  function isLocalAdmin(state) {
+    return currentLocalMember(state)?.role === "Admin";
+  }
+
+  async function enrollmentHash(email, buffId) {
+    if (!window.crypto?.subtle || !window.TextEncoder) {
+      throw new Error("This browser does not support secure enrollment verification.");
+    }
+    const value = `${normalizeEmail(email)}\n${normalizeBuffId(buffId)}`;
+    const bytes = new TextEncoder().encode(value);
+    const digest = await window.crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(digest))
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+  }
+
+  async function buildEnrollmentEntries(state) {
+    const entries = [];
+    for (const member of state?.members || []) {
+      const email = normalizeEmail(member.email);
+      const buffId = normalizeBuffId(member.buffId);
+      if (!email || !buffId) continue;
+      entries.push({
+        hash: await enrollmentHash(email, buffId),
+        memberId: member.id,
+      });
+    }
+    return entries;
+  }
+
+  async function syncEnrollmentRegistry(state) {
+    if (!firebaseAuth.currentUser || !hasAppSession() || !isLocalAdmin(state)) return;
+
+    const entries = await buildEnrollmentEntries(state);
+    const desiredHashes = entries.map((entry) => entry.hash);
+    const desiredSet = new Set(desiredHashes);
+    const indexSnapshot = await enrollmentIndexRef.get();
+    const previousHashes = Array.isArray(indexSnapshot.data()?.hashes)
+      ? indexSnapshot.data().hashes
+      : [];
+
+    const batch = firebaseDb.batch();
+    entries.forEach((entry) => {
+      batch.set(
+        enrollmentsRef.doc(entry.hash),
+        {
+          chapterId: "alpha-psi",
+          memberId: entry.memberId,
+          active: true,
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+    });
+
+    previousHashes
+      .filter((hash) => !desiredSet.has(hash))
+      .forEach((hash) => batch.delete(enrollmentsRef.doc(hash)));
+
+    batch.set(
+      enrollmentIndexRef,
+      {
+        hashes: desiredHashes,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        updatedBy: firebaseAuth.currentUser.uid,
+      },
+      { merge: true },
+    );
+
+    await batch.commit();
+  }
+
   function queueCloudWrite() {
     if (applyingCloudState || !firebaseAuth.currentUser || !hasAppSession()) return;
     clearTimeout(writeTimer);
@@ -84,6 +177,7 @@
           },
           { merge: true },
         );
+        await syncEnrollmentRegistry(localState);
       } catch (error) {
         console.error("Firebase state sync failed:", error);
       }
@@ -106,7 +200,11 @@
 
     try {
       const cloudState = await loadCloudState();
-      if (!cloudState) queueCloudWrite();
+      if (!cloudState) {
+        queueCloudWrite();
+      } else {
+        await syncEnrollmentRegistry(readLocalState());
+      }
 
       unsubscribe = cloudRef.onSnapshot(
         (snapshot) => {
@@ -116,9 +214,6 @@
           const nextState = data?.state;
           if (!nextState) return;
 
-          // Never reload for this browser tab's own write. Firestore listeners
-          // fire for local writes as well as remote updates, which otherwise can
-          // create a save -> snapshot -> reload loop.
           if (snapshot.metadata.hasPendingWrites || data?.updatedByClient === clientId) {
             return;
           }
@@ -138,11 +233,39 @@
     }
   }
 
-  // Firebase accounts are created by an administrator. Members never create
-  // accounts from the login screen. Their school email is the username and
-  // their Buff ID is the password set by the administrator in Firebase Auth.
+  function isCredentialError(error) {
+    return (
+      error?.code === "auth/invalid-credential" ||
+      error?.code === "auth/wrong-password" ||
+      error?.code === "auth/user-not-found"
+    );
+  }
+
+  async function isApprovedEnrollment(email, buffId) {
+    const hash = await enrollmentHash(email, buffId);
+    const snapshot = await enrollmentsRef.doc(hash).get();
+    return snapshot.exists && snapshot.data()?.active !== false;
+  }
+
   async function authenticate(email, buffId) {
-    await firebaseAuth.signInWithEmailAndPassword(email, buffId);
+    try {
+      await firebaseAuth.signInWithEmailAndPassword(email, buffId);
+      return;
+    } catch (signInError) {
+      if (!isCredentialError(signInError)) throw signInError;
+
+      const approved = await isApprovedEnrollment(email, buffId);
+      if (!approved) throw signInError;
+
+      try {
+        await firebaseAuth.createUserWithEmailAndPassword(email, buffId);
+      } catch (createError) {
+        if (createError?.code === "auth/email-already-in-use") {
+          throw signInError;
+        }
+        throw createError;
+      }
+    }
   }
 
   document.addEventListener(
@@ -193,13 +316,12 @@
       } catch (error) {
         console.error("Firebase login failed:", error);
         if (status) {
-          if (
-            error.code === "auth/invalid-credential" ||
-            error.code === "auth/wrong-password" ||
-            error.code === "auth/user-not-found"
-          ) {
+          if (isCredentialError(error)) {
             status.textContent =
-              "Invalid school email or Buff ID. If this is a new member, an administrator must create their Firebase account first.";
+              "Invalid school email or Buff ID, or this member has not been added by an administrator.";
+          } else if (error.code === "auth/weak-password") {
+            status.textContent =
+              "This Buff ID cannot be used as a Firebase password because it is too short. Contact an administrator.";
           } else {
             status.textContent =
               `Cloud sign-in failed. ${error.message || "Please try again."} (code: ${error.code || "unknown"})`;
@@ -240,8 +362,6 @@
   };
 
   firebaseAuth.onAuthStateChanged(async (user) => {
-    // Firebase Auth can remain signed in after the app's own session has ended.
-    // Do not start Firestore sync on the login screen.
     if (user && hasAppSession()) {
       await initializeRealtimeSync(user);
     }
