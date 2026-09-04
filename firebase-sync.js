@@ -91,31 +91,11 @@
     }
   }
 
+  // Firebase accounts are created by an administrator. Members never create
+  // accounts from the login screen. Their school email is the username and
+  // their Buff ID is the password set by the administrator in Firebase Auth.
   async function authenticate(email, buffId) {
-    try {
-      await firebaseAuth.signInWithEmailAndPassword(email, buffId);
-      return;
-    } catch (error) {
-      // Firebase Auth may return auth/invalid-credential instead of
-      // auth/user-not-found when the email does not exist. Try account
-      // creation for that case so first-time members can be migrated.
-      if (error.code === "auth/user-not-found" || error.code === "auth/invalid-credential") {
-        try {
-          await firebaseAuth.createUserWithEmailAndPassword(email, buffId);
-          return;
-        } catch (createError) {
-          if (createError.code === "auth/email-already-in-use") {
-            const passwordError = new Error(
-              "The Firebase account exists, but the entered Buff ID is not its current password.",
-            );
-            passwordError.code = "auth/wrong-password";
-            throw passwordError;
-          }
-          throw createError;
-        }
-      }
-      throw error;
-    }
+    await firebaseAuth.signInWithEmailAndPassword(email, buffId);
   }
 
   document.addEventListener(
@@ -167,10 +147,13 @@
       } catch (error) {
         console.error("Firebase login failed:", error);
         if (status) {
-          status.textContent =
-            error.code === "auth/wrong-password"
-              ? "The Firebase account exists, but the Buff ID is not its current password."
-              : `Cloud sign-in failed. ${error.message || "Check the email/Buff ID and try again."} (code: ${error.code || "unknown"})`;
+          if (error.code === "auth/invalid-credential" || error.code === "auth/wrong-password" || error.code === "auth/user-not-found") {
+            status.textContent =
+              "Invalid school email or Buff ID. If this is a new member, an administrator must create their Firebase account first.";
+          } else {
+            status.textContent =
+              `Cloud sign-in failed. ${error.message || "Please try again."} (code: ${error.code || "unknown"})`;
+          }
         }
       }
     },
