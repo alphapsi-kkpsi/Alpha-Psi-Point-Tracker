@@ -27,6 +27,11 @@
     applyingCloudState = false;
   }
 
+  function cloudComparableState(state) {
+    if (!state) return null;
+    return { ...state, loginCredentials: [] };
+  }
+
   function findMember(state, email, buffId) {
     return (state?.members || []).find(
       (member) =>
@@ -44,7 +49,7 @@
       try {
         await cloudRef.set(
           {
-            state: { ...localState, loginCredentials: [] },
+            state: cloudComparableState(localState),
             updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
             updatedBy: firebaseAuth.currentUser.uid,
           },
@@ -78,9 +83,15 @@
         (snapshot) => {
           const nextState = snapshot.data()?.state;
           if (!nextState) return;
-          const current = localStorage.getItem(APP_KEY);
-          const incoming = JSON.stringify(nextState);
-          if (current === incoming) return;
+
+          // app.js may regenerate local-only loginCredentials on every page load.
+          // Those credentials are intentionally excluded from Firestore, so ignore
+          // that field when deciding whether a cloud update actually changed data.
+          const currentState = readLocalState();
+          const currentComparable = JSON.stringify(cloudComparableState(currentState));
+          const incomingComparable = JSON.stringify(cloudComparableState(nextState));
+          if (currentComparable === incomingComparable) return;
+
           writeLocalState(nextState);
           window.location.reload();
         },
