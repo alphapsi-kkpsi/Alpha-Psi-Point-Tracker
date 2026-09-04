@@ -88,37 +88,34 @@
       );
     } catch (error) {
       console.error("Firebase cloud initialization failed:", error);
-      throw error;
     }
   }
 
   async function authenticate(email, buffId) {
     try {
       await firebaseAuth.signInWithEmailAndPassword(email, buffId);
+      return;
     } catch (error) {
-      if (error.code === "auth/user-not-found") {
-        await firebaseAuth.createUserWithEmailAndPassword(email, buffId);
-      } else {
-        throw error;
+      // Firebase Auth may return auth/invalid-credential instead of
+      // auth/user-not-found when the email does not exist. Try account
+      // creation for that case so first-time members can be migrated.
+      if (error.code === "auth/user-not-found" || error.code === "auth/invalid-credential") {
+        try {
+          await firebaseAuth.createUserWithEmailAndPassword(email, buffId);
+          return;
+        } catch (createError) {
+          if (createError.code === "auth/email-already-in-use") {
+            const passwordError = new Error(
+              "The Firebase account exists, but the entered Buff ID is not its current password.",
+            );
+            passwordError.code = "auth/wrong-password";
+            throw passwordError;
+          }
+          throw createError;
+        }
       }
+      throw error;
     }
-  }
-
-  function describeFirebaseError(error) {
-    const code = error?.code || "unknown";
-    const messages = {
-      "auth/invalid-email": "The school email address is not valid.",
-      "auth/invalid-credential": "The Firebase account exists, but the Buff ID is not its current password.",
-      "auth/wrong-password": "The Firebase account exists, but the Buff ID is not its current password.",
-      "auth/user-disabled": "This Firebase account has been disabled.",
-      "auth/weak-password": "The Buff ID is too short to use as a Firebase password. This member needs an account setup password.",
-      "auth/email-already-in-use": "A Firebase account already exists for this email, but it could not be signed in with the supplied Buff ID.",
-      "auth/operation-not-allowed": "Firebase Email/Password sign-in is not enabled for this project.",
-      "permission-denied": "Firebase reached Firestore, but the current security rules denied access. Make sure the published rules allow authenticated users to read/write chapters/alpha-psi.",
-      "failed-precondition": "Firestore is not ready for this request yet. Check that the Firestore database was created successfully.",
-      "unavailable": "Firebase is temporarily unavailable. Check the internet connection and try again.",
-    };
-    return `${messages[code] || `Firebase error: ${code}.`} (code: ${code})`;
   }
 
   document.addEventListener(
@@ -169,7 +166,12 @@
         window.location.reload();
       } catch (error) {
         console.error("Firebase login failed:", error);
-        if (status) status.textContent = describeFirebaseError(error);
+        if (status) {
+          status.textContent =
+            error.code === "auth/wrong-password"
+              ? "The Firebase account exists, but the Buff ID is not its current password."
+              : `Cloud sign-in failed. ${error.message || "Check the email/Buff ID and try again."} (code: ${error.code || "unknown"})`;
+        }
       }
     },
     true,
@@ -206,11 +208,7 @@
 
   firebaseAuth.onAuthStateChanged(async (user) => {
     if (user) {
-      try {
-        await initializeRealtimeSync(user);
-      } catch (error) {
-        console.error("Firebase auth-state initialization failed:", error);
-      }
+      await initializeRealtimeSync(user);
     }
   });
 })();
