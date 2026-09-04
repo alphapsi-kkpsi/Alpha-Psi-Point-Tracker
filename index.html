@@ -8,6 +8,24 @@
   </head>
   <body>
     <main id="app" aria-live="polite"></main>
+
+    <!-- Firebase SDKs -->
+    <script src="https://www.gstatic.com/firebasejs/12.1.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/12.1.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/12.1.0/firebase-firestore-compat.js"></script>
+    <script>
+      const firebaseConfig = {
+        apiKey: "AIzaSyA2I8qSLHJHJg1672k51cCQaHSFMblB4yUew",
+        authDomain: "alphapsi-pointtracker.firebaseapp.com",
+        projectId: "alphapsi-pointtracker",
+        storageBucket: "alphapsi-pointtracker.firebasestorage.app",
+        messagingSenderId: "428688680473",
+        appId: "1:428688680473:web:e3e81709e8f4f1af8fac88",
+        measurementId: "G-VJNGQ0LSHR"
+      };
+
+      firebase.initializeApp(firebaseConfig);
+    </script>
     <script src="app.js"></script>
   </body>
 </html>
