@@ -1,6 +1,7 @@
 (() => {
   const APP_KEY = "alphaPsiPointTrackerStateV1";
   const SESSION_KEY = "alphaPsiPointTrackerSessionV1";
+  const CLIENT_ID_KEY = "alphaPsiFirebaseClientIdV1";
   const firebaseAuth = window.firebase?.auth ? firebase.auth() : null;
   const firebaseDb = window.firebase?.firestore ? firebase.firestore() : null;
   if (!firebaseAuth || !firebaseDb) return;
@@ -10,8 +11,22 @@
   let writeTimer = null;
   let unsubscribe = null;
 
+  let clientId = sessionStorage.getItem(CLIENT_ID_KEY);
+  if (!clientId) {
+    clientId =
+      (window.crypto?.randomUUID && window.crypto.randomUUID()) ||
+      `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    sessionStorage.setItem(CLIENT_ID_KEY, clientId);
+  }
+
   const normalizeEmail = (value) => String(value || "").trim().toLowerCase();
   const normalizeBuffId = (value) => String(value || "").trim();
+
+  function hasAppSession() {
+    return Boolean(
+      localStorage.getItem(SESSION_KEY) || sessionStorage.getItem(SESSION_KEY),
+    );
+  }
 
   function readLocalState() {
     try {
@@ -32,6 +47,19 @@
     return { ...state, loginCredentials: [] };
   }
 
+  function stableStringify(value) {
+    if (Array.isArray(value)) {
+      return `[${value.map(stableStringify).join(",")}]`;
+    }
+    if (value && typeof value === "object") {
+      return `{${Object.keys(value)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+        .join(",")}}`;
+    }
+    return JSON.stringify(value);
+  }
+
   function findMember(state, email, buffId) {
     return (state?.members || []).find(
       (member) =>
@@ -41,7 +69,7 @@
   }
 
   function queueCloudWrite() {
-    if (applyingCloudState || !firebaseAuth.currentUser) return;
+    if (applyingCloudState || !firebaseAuth.currentUser || !hasAppSession()) return;
     clearTimeout(writeTimer);
     writeTimer = setTimeout(async () => {
       const localState = readLocalState();
@@ -52,6 +80,7 @@
             state: cloudComparableState(localState),
             updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
             updatedBy: firebaseAuth.currentUser.uid,
+            updatedByClient: clientId,
           },
           { merge: true },
         );
@@ -72,7 +101,7 @@
   }
 
   async function initializeRealtimeSync(user) {
-    if (!user) return;
+    if (!user || !hasAppSession()) return;
     if (unsubscribe) unsubscribe();
 
     try {
@@ -81,15 +110,22 @@
 
       unsubscribe = cloudRef.onSnapshot(
         (snapshot) => {
-          const nextState = snapshot.data()?.state;
+          if (!hasAppSession()) return;
+
+          const data = snapshot.data();
+          const nextState = data?.state;
           if (!nextState) return;
 
-          // app.js may regenerate local-only loginCredentials on every page load.
-          // Those credentials are intentionally excluded from Firestore, so ignore
-          // that field when deciding whether a cloud update actually changed data.
+          // Never reload for this browser tab's own write. Firestore listeners
+          // fire for local writes as well as remote updates, which otherwise can
+          // create a save -> snapshot -> reload loop.
+          if (snapshot.metadata.hasPendingWrites || data?.updatedByClient === clientId) {
+            return;
+          }
+
           const currentState = readLocalState();
-          const currentComparable = JSON.stringify(cloudComparableState(currentState));
-          const incomingComparable = JSON.stringify(cloudComparableState(nextState));
+          const currentComparable = stableStringify(cloudComparableState(currentState));
+          const incomingComparable = stableStringify(cloudComparableState(nextState));
           if (currentComparable === incomingComparable) return;
 
           writeLocalState(nextState);
@@ -141,8 +177,6 @@
           return;
         }
 
-        if (!cloudState) queueCloudWrite();
-
         const remember = formData.get("remember") === "on";
         const session = { memberId: member.id, remember };
         if (remember) {
@@ -153,12 +187,17 @@
           sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
         }
 
+        if (!cloudState) queueCloudWrite();
         await initializeRealtimeSync(firebaseAuth.currentUser);
         window.location.reload();
       } catch (error) {
         console.error("Firebase login failed:", error);
         if (status) {
-          if (error.code === "auth/invalid-credential" || error.code === "auth/wrong-password" || error.code === "auth/user-not-found") {
+          if (
+            error.code === "auth/invalid-credential" ||
+            error.code === "auth/wrong-password" ||
+            error.code === "auth/user-not-found"
+          ) {
             status.textContent =
               "Invalid school email or Buff ID. If this is a new member, an administrator must create their Firebase account first.";
           } else {
@@ -201,7 +240,9 @@
   };
 
   firebaseAuth.onAuthStateChanged(async (user) => {
-    if (user) {
+    // Firebase Auth can remain signed in after the app's own session has ended.
+    // Do not start Firestore sync on the login screen.
+    if (user && hasAppSession()) {
       await initializeRealtimeSync(user);
     }
   });
