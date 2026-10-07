@@ -124,6 +124,7 @@ function createDefaultState() {
         assignedMemberIds: [],
       },
     ],
+    fundraisers: [],
     customBandEnsembles: [],
     customCommittees: [],
     extraBusinessMeetings: [],
@@ -190,6 +191,13 @@ function normalizeState(saved) {
       date: item.date || todayISO(),
       mandatory: item.mandatory !== false,
       assignedMemberIds: item.assignedMemberIds || [],
+    })),
+    fundraisers: (saved.fundraisers || []).map((item) => ({
+      ...item,
+      id: item.id || uid("fundraiser"),
+      title: item.title || "Fundraiser",
+      date: item.date || todayISO(),
+      mandatory: true,
     })),
     customBandEnsembles: (saved.customBandEnsembles || []).map((item) => ({
       id: item.id || uid("band"),
@@ -846,13 +854,16 @@ function recordsForRange(start, end) {
     const impactsByMember = new Map((record.points || []).map((impact) => [impact.memberId, impact]));
     for (const status of record.statuses || []) {
       const impact = impactsByMember.get(status.memberId);
+      const approvedLetterOverride = hasApprovedAttendanceLetter(record, impact);
       attendanceRecords.push({
         memberId: status.memberId,
         title: record.eventLabel,
         date: record.date,
         createdAt: record.createdAt,
         recordingMemberId: record.recordingMemberId,
-        notes: [status.status, impact?.note, record.notes].filter(Boolean).join(" - "),
+        attendanceStatus: status.status,
+        approvedLetterOverride,
+        notes: [approvedLetterOverride ? null : impact?.note, record.notes].filter(Boolean).join(" - "),
         points: effectiveAttendancePoints(record, impact),
         source: "Attendance",
       });
@@ -877,6 +888,8 @@ function renderRecordLog(records, emptyText) {
               </div>
               <div>${escapeHtml(record.title)} - ${escapeHtml(record.source)}</div>
               <div class="muted">${prettyDate(record.date)} at ${prettyTime(record.createdAt)} - Recorded by ${escapeHtml(formatMember(recorder || {}))}</div>
+              ${record.attendanceStatus ? `<div class="muted">${escapeHtml(record.attendanceStatus)}</div>` : ""}
+              ${record.approvedLetterOverride ? `<div class="points-positive">Approved Letter Override</div>` : ""}
               ${record.notes ? `<div class="muted">${escapeHtml(record.notes)}</div>` : ""}
             </article>
           `;
@@ -946,6 +959,7 @@ function attendanceChoices(member, path, adminMode) {
     if (fullAccess) items.push({ type: "business", label: "Business Meetings", meta: "Fridays at 1:30pm" });
     if (fullAccess) items.push({ type: "committees", label: "Committee Meetings", meta: allCommittees().join(", ") });
     if (fullAccess) items.push({ type: "functions", label: "Functions", meta: `${state.functions.length} listed` });
+    if (fullAccess) items.push({ type: "fundraisers", label: "Fundraisers", meta: `${state.fundraisers.length} listed` });
     return { items };
   }
 
@@ -1017,16 +1031,17 @@ function attendanceChoices(member, path, adminMode) {
     };
   }
 
-  if (first === "functions" && path.length === 1) {
+  if ((first === "functions" || first === "fundraisers") && path.length === 1) {
+    const isFundraiser = first === "fundraisers";
     return {
-      items: state.functions
+      items: (isFundraiser ? state.fundraisers : state.functions)
         .slice()
         .sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")))
         .map((item) => ({
           type: "event",
           label: item.title,
-          meta: `${prettyDate(item.date)} - ${item.mandatory ? "Mandatory" : "Optional"}`,
-          eventKind: "function",
+          meta: `${prettyDate(item.date)} - ${isFundraiser || item.mandatory ? "Mandatory" : "Optional"}`,
+          eventKind: isFundraiser ? "fundraiser" : "function",
           eventId: item.id,
           date: item.date,
         })),
@@ -1199,6 +1214,7 @@ function renderAttendanceSubmissionSummary(record) {
 function membersForAttendanceEvent(event) {
   if (event.eventKind === "business") return [...state.members].sort(memberSort);
   if (event.eventKind === "function") return [...state.members].sort(memberSort);
+  if (event.eventKind === "fundraiser") return [...state.members].sort(memberSort);
   if (event.eventKind === "custom-band") return [...state.members].sort(memberSort);
   if (event.eventKind === "committee") {
     const committee = event.label;
@@ -1356,7 +1372,7 @@ function renderAdminAttendance(member) {
 function renderAdminAttendanceAddButton(path) {
   if (
     path.length === 0 ||
-    (path.length === 1 && ["category", "business", "committees", "functions"].includes(path[0].type))
+    (path.length === 1 && ["category", "business", "committees", "functions", "fundraisers"].includes(path[0].type))
   ) {
     return `<button class="primary small-action" data-add-attendance-event>Add</button>`;
   }
@@ -1364,9 +1380,10 @@ function renderAdminAttendanceAddButton(path) {
 }
 
 function renderAdminAttendanceEvent(event) {
-  const functionItem = state.functions.find((item) => item.id === event.eventId);
-  if (event.eventKind === "function" && functionItem) {
-    return renderFunctionEditor(functionItem);
+  if (event.eventKind === "function" || event.eventKind === "fundraiser") {
+    const items = event.eventKind === "fundraiser" ? state.fundraisers : state.functions;
+    const item = items.find((item) => item.id === event.eventId);
+    return item ? renderFunctionEditor(item, event.eventKind) : `<div class="empty">Event not found.</div>`;
   }
 
   if (event.eventKind === "committee") {
@@ -1385,30 +1402,32 @@ function renderAdminAttendanceEvent(event) {
   return `<div class="empty">Function not found.</div>`;
 }
 
-function renderFunctionEditor(item) {
+function renderFunctionEditor(item, eventKind = "function") {
+  const isFundraiser = eventKind === "fundraiser";
+  const title = isFundraiser ? "Fundraiser" : "Function";
   return `
-    <form id="functionEditForm" class="panel">
+    <form id="functionEditForm" class="panel" data-event-kind="${eventKind}">
       <input type="hidden" name="functionId" value="${item.id}">
       <div class="form-grid">
         <label class="field">
-          <span>Function Title</span>
-          <input name="title" value="${escapeHtml(item.title)}" aria-label="Function title">
+          <span>${title} Title</span>
+          <input name="title" value="${escapeHtml(item.title)}" aria-label="${title} title">
         </label>
         <label class="field">
           <span>Date</span>
           <input name="date" type="date" value="${escapeHtml(item.date || todayISO())}">
         </label>
-        <label class="field">
+        ${isFundraiser ? `<p class="muted">All fundraisers are mandatory.</p>` : `<label class="field">
           <span>Function Type</span>
           <select name="mandatory" aria-label="Function type">
           <option value="true" ${item.mandatory ? "selected" : ""}>Mandatory</option>
           <option value="false" ${!item.mandatory ? "selected" : ""}>Optional</option>
           </select>
-        </label>
+        </label>`}
       </div>
       <div class="form-actions">
         <button class="secondary small-action" type="submit">Update</button>
-        <button class="danger small-action" type="button" data-delete-function="${item.id}">Delete</button>
+        <button class="danger small-action" type="button" data-delete-function="${item.id}" data-event-kind="${eventKind}">Delete</button>
       </div>
     </form>
   `;
@@ -1714,9 +1733,12 @@ function renderAdminRecordList(records) {
   `;
 }
 
+function hasApprovedAttendanceLetter(record, impact) {
+  return Number(impact?.points || 0) < 0 && record.approvedLetterMemberIds?.includes(impact.memberId) === true;
+}
+
 function effectiveAttendancePoints(record, impact) {
-  const points = Number(impact?.points || 0);
-  return points < 0 && record.approvedLetterMemberIds?.includes(impact.memberId) ? 0 : points;
+  return hasApprovedAttendanceLetter(record, impact) ? 0 : Number(impact?.points || 0);
 }
 
 function renderAttendanceLetterApprovals(recordId) {
@@ -1995,6 +2017,7 @@ function renderAttendanceEventModal(context) {
                   <option value="business" ${defaultType === "business" ? "selected" : ""}>Business Meeting</option>
                   <option value="committee" ${defaultType === "committee" ? "selected" : ""}>Committee</option>
                   <option value="function" ${defaultType === "function" ? "selected" : ""}>Function</option>
+                  <option value="fundraiser" ${defaultType === "fundraiser" ? "selected" : ""}>Fundraiser</option>
                 </select>
               </label>
             `
@@ -2012,13 +2035,13 @@ function renderAttendanceEventModal(context) {
           <span>Time</span>
           <input name="time" type="time" value="13:30">
         </label>
-        <label class="field function-type-field">
+        ${defaultType === "fundraiser" ? `<p class="muted">All fundraisers are mandatory.</p>` : `<label class="field function-type-field">
           <span>Function Type</span>
           <select name="mandatory">
             <option value="true">Mandatory</option>
             <option value="false">Optional</option>
           </select>
-        </label>
+        </label>`}
         <div class="form-actions">
           <button class="primary" type="submit">Add</button>
           <button class="ghost" type="button" data-close-modal-button>Cancel</button>
@@ -2034,6 +2057,7 @@ function attendanceAddTypeForPath(path) {
   if (first === "business") return "business";
   if (first === "committees") return "committee";
   if (first === "functions") return "function";
+  if (first === "fundraisers") return "fundraiser";
   return "function";
 }
 
@@ -2468,12 +2492,14 @@ function bindAdminEvents(member) {
 
   document.querySelector("#functionEditForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (currentMember()?.role !== "Admin") return;
+    const isFundraiser = event.currentTarget.dataset.eventKind === "fundraiser";
     const form = new FormData(event.currentTarget);
-    const item = state.functions.find((fn) => fn.id === form.get("functionId"));
+    const item = (isFundraiser ? state.fundraisers : state.functions).find((fn) => fn.id === form.get("functionId"));
     if (item) {
       item.title = String(form.get("title")).trim() || item.title;
       item.date = String(form.get("date") || todayISO());
-      item.mandatory = form.get("mandatory") === "true";
+      item.mandatory = isFundraiser || form.get("mandatory") === "true";
       saveState();
     }
     render();
@@ -2481,8 +2507,13 @@ function bindAdminEvents(member) {
 
   document.querySelectorAll("[data-delete-function]").forEach((button) => {
     button.addEventListener("click", () => {
+      if (currentMember()?.role !== "Admin") return;
       const id = button.dataset.deleteFunction;
-      state.functions = state.functions.filter((item) => item.id !== id);
+      if (button.dataset.eventKind === "fundraiser") {
+        state.fundraisers = state.fundraisers.filter((item) => item.id !== id);
+      } else {
+        state.functions = state.functions.filter((item) => item.id !== id);
+      }
       state.attendanceRecords = state.attendanceRecords.filter((record) => record.eventId !== id);
       view.adminAttendancePath.pop();
       saveState();
@@ -2725,11 +2756,14 @@ function updateAttendanceEventFields() {
   if (!form) return;
   const type = String(form.querySelector("[name='eventType']")?.value || "function");
   form.querySelector(".event-date-field")?.classList.toggle("is-hidden-field", type === "band" || type === "committee");
-  form.querySelector(".event-time-field")?.classList.toggle("is-hidden-field", type === "band" || type === "function");
+  form.querySelector(".event-time-field")?.classList.toggle("is-hidden-field", ["band", "function", "fundraiser"].includes(type));
   form.querySelector(".function-type-field")?.classList.toggle("is-hidden-field", type !== "function");
+  const mandatorySelect = form.querySelector("[name='mandatory']");
+  if (mandatorySelect) mandatorySelect.disabled = type !== "function";
 }
 
 function addAttendanceEventFromForm(form) {
+  if (currentMember()?.role !== "Admin") return;
   const type = String(form.get("eventType"));
   const title = String(form.get("title") || "").trim();
   if (!title) return;
@@ -2756,11 +2790,12 @@ function addAttendanceEventFromForm(form) {
     });
     return;
   }
-  state.functions.push({
-    id: uid("function"),
+  const isFundraiser = type === "fundraiser";
+  (isFundraiser ? state.fundraisers : state.functions).push({
+    id: uid(isFundraiser ? "fundraiser" : "function"),
     title,
     date: String(form.get("date") || todayISO()),
-    mandatory: form.get("mandatory") === "true",
+    mandatory: isFundraiser || form.get("mandatory") === "true",
     assignedMemberIds: [],
   });
 }
@@ -2935,12 +2970,14 @@ function pointsForAttendanceStatus(event, member, status) {
   }
 
   if (status === "Late") {
+    if (event.eventKind === "fundraiser") return conditionalImpact(member, "negative", "late-fundraiser");
     if (event.eventKind === "committee") return conditionalImpact(member, "negative", "late-committee");
     if (event.eventKind === "band" || event.eventKind === "custom-band") return conditionalImpact(member, "negative", "late-band");
     return conditionalImpact(member, "negative", "late-meeting");
   }
 
   if (status === "Absent") {
+    if (event.eventKind === "fundraiser") return conditionalImpact(member, "negative", "missed-fundraiser");
     if (event.eventKind === "committee") return conditionalImpact(member, "negative", "absent-committee");
     if (event.eventKind === "band" || event.eventKind === "custom-band") return conditionalImpact(member, "negative", "absent-band");
     if (event.eventKind === "function") {
