@@ -23,6 +23,13 @@ const bandSections = [
   "Drum Majors/Marching Techs",
 ];
 const committees = ["M&E", "W&M", "S&B", "A&P", "H&T"];
+const absenceRuleIds = new Set([
+  "missed-fundraiser",
+  "missed-mandatory-function",
+  "absent-committee",
+  "absent-meeting",
+  "absent-band",
+]);
 const conditionalIgnoredActions = new Set([
   "Late to Committee Meeting Without Approved Letter",
   "Late to Meeting / Song Rehearsal Without Approved Letter",
@@ -3086,6 +3093,10 @@ function attendancePointImpacts(event, statusesForMembers) {
 }
 
 function pointsForAttendanceStatus(event, member, status) {
+  // Conditional status exempts every absence, including individual fundraiser shifts.
+  if (status === "Absent" && member.status === "Conditional") {
+    return { points: 0, action: "Absence exempt for Conditional status" };
+  }
   if (status === "Present") {
     if (event.eventKind === "function") {
       const fn = state.functions.find((item) => item.id === event.eventId);
@@ -3144,6 +3155,10 @@ function createPointRecord(form, recordingMember, type) {
   }
   if (rule?.value === null) {
     points = Number(form.get("discretionPoints") || 0);
+  }
+  const selectedMember = state.members.find((member) => member.id === form.get("memberId"));
+  if (selectedMember?.status === "Conditional" && absenceRuleIds.has(rule?.id) && points < 0) {
+    points = 0;
   }
   return {
     id: uid("point"),
