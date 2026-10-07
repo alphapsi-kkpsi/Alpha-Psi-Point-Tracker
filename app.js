@@ -54,8 +54,8 @@ const negativeRuleSeeds = [
   ["late-committee", "Late to Committee Meeting Without Approved Letter", -10],
   ["late-meeting", "Late to Meeting / Song Rehearsal Without Approved Letter", -10],
   ["late-band", "Late to Band Ensemble Rehearsal Without Approved Letter", -10],
-  ["late-fundraiser", "Late to Fundraiser Shift", -10],
-  ["missed-fundraiser", "Not Working a Fundraiser Shift", -15],
+  ["late-fundraiser", "Late to Fundraiser Shift", -1],
+  ["missed-fundraiser", "Not Working a Fundraiser Shift", -2],
   ["missed-mandatory-function", "Not Attending a Mandatory Function", -15],
   ["absent-committee", "Absent from Committee Meeting Without Approved Letter", -20],
   ["absent-meeting", "Absent from Meeting / Song Rehearsal Without Approved Letter", -20],
@@ -125,6 +125,7 @@ function createDefaultState() {
       },
     ],
     fundraisers: [],
+    fundraiserShiftRulesVersion: 1,
     customBandEnsembles: [],
     customCommittees: [],
     extraBusinessMeetings: [],
@@ -182,8 +183,15 @@ function normalizeState(saved) {
     loginCredentials: normalizeLoginCredentials(saved.loginCredentials || defaults.loginCredentials, members),
     pointRules: {
       positive: mergeRules(defaults.pointRules.positive, saved.pointRules?.positive),
-      negative: mergeRules(defaults.pointRules.negative, saved.pointRules?.negative),
+      negative: mergeRules(defaults.pointRules.negative, saved.pointRules?.negative).map((rule) => {
+        if (saved.fundraiserShiftRulesVersion !== 1) {
+          if (rule.id === "late-fundraiser" && rule.value === -10) return { ...rule, value: -1 };
+          if (rule.id === "missed-fundraiser" && rule.value === -15) return { ...rule, value: -2 };
+        }
+        return rule;
+      }),
     },
+    fundraiserShiftRulesVersion: 1,
     functions: (saved.functions || defaults.functions).map((item) => ({
       ...item,
       id: item.id || uid("function"),
@@ -861,7 +869,7 @@ function recordsForRange(start, end) {
         date: record.date,
         createdAt: record.createdAt,
         recordingMemberId: record.recordingMemberId,
-        attendanceStatus: status.status,
+        attendanceStatus: attendanceStatusLabel(status),
         approvedLetterOverride,
         notes: [approvedLetterOverride ? null : impact?.note, record.notes].filter(Boolean).join(" - "),
         points: effectiveAttendancePoints(record, impact),
@@ -1128,7 +1136,7 @@ function renderAttendanceEventForm(member, event) {
         <span>Date</span>
         <input name="date" type="date" value="${eventDate}" ${event.date ? "readonly" : ""} ${locked ? "disabled" : ""}>
       </label>
-      <div class="table-wrap">
+      ${event.eventKind === "fundraiser" ? renderFundraiserAttendanceTable(members, existing, locked) : `<div class="table-wrap">
         <table>
           <thead><tr><th>Member</th><th>Status</th></tr></thead>
           <tbody>
@@ -1159,7 +1167,7 @@ function renderAttendanceEventForm(member, event) {
               .join("")}
           </tbody>
         </table>
-      </div>
+      </div>`}
       <label class="field">
         <span>Notes</span>
         <textarea name="notes" ${locked ? "disabled" : ""}>${escapeHtml(existing?.notes || "")}</textarea>
@@ -1171,13 +1179,55 @@ function renderAttendanceEventForm(member, event) {
   `;
 }
 
+function attendanceStatusLabel(entry) {
+  if (!entry.shift1 || !entry.shift2) return entry.status;
+  return `Shift 1: ${entry.shift1} · Shift 2: ${entry.shift2} · Extra Shifts Worked: ${entry.extraShifts || 0}`;
+}
+
+function renderFundraiserAttendanceTable(members, record, locked = false) {
+  const saved = new Map((record?.statuses || []).map((entry) => [entry.memberId, entry]));
+  return `
+    <p class="muted">Two shifts are required per member. Record each shift separately.</p>
+    ${record && record.statuses.some((entry) => !entry.shift1 || !entry.shift2) ? `<p class="notice">This older record has one attendance status per member. Select both shifts to update it.</p>` : ""}
+    <div class="table-wrap"><table>
+      <thead><tr><th>Member</th><th>Shifts</th></tr></thead>
+      <tbody>${members.map((member) => {
+        const entry = saved.get(member.id) || {};
+        const extras = Number(entry.extraShifts || 0);
+        const options = [...new Set([...Array.from({ length: 11 }, (_, index) => index), extras])].sort((a, b) => a - b);
+        return `<tr>
+          <td>${escapeHtml(formatMember(member))}<br><span class="muted">${escapeHtml(member.role)}</span></td>
+          <td><div class="fundraiser-shifts">
+            ${[1, 2].map((shift) => `<div class="fundraiser-shift-row">
+              <span>Shift ${shift}</span>
+              <div>
+                <div class="segment" data-fundraiser-status-group="${escapeHtml(member.id)}-${shift}" role="group" aria-label="${escapeHtml(formatMember(member))} Shift ${shift}">
+                  ${attendanceStatuses.map((status) => `<button type="button" data-fundraiser-status-choice="${status}" class="${entry[`shift${shift}`] === status ? "active" : ""}" ${locked ? "disabled" : ""}>${status}</button>`).join("")}
+                </div>
+                <input type="hidden" name="shift${shift}:${escapeHtml(member.id)}" value="${escapeHtml(entry[`shift${shift}`] || "")}">
+              </div>
+            </div>`).join("")}
+            <label class="field"><span>Extra Shifts Worked</span>
+              <select name="extraShifts:${escapeHtml(member.id)}" data-extra-shifts aria-label="Extra Shifts Worked for ${escapeHtml(formatMember(member))}" ${locked ? "disabled" : ""}>
+                ${options.map((count) => `<option value="${count}" ${extras === count ? "selected" : ""}>${count}</option>`).join("")}
+                <option value="more">More…</option>
+              </select>
+            </label>
+          </div></td>
+        </tr>`;
+      }).join("")}</tbody>
+    </table></div>
+    <p class="notice" data-fundraiser-error role="alert" hidden></p>
+  `;
+}
+
 function renderAttendanceSubmissionSummary(record) {
   if (!record) return "";
   const impactsByMember = new Map((record.points || []).map((impact) => [impact.memberId, impact]));
   const rows = (record.statuses || [])
     .map((status) => ({
       member: state.members.find((item) => item.id === status.memberId),
-      status: status.status,
+      status: attendanceStatusLabel(status),
       impact: impactsByMember.get(status.memberId),
     }))
     .filter((row) => row.member)
@@ -1691,8 +1741,12 @@ function sortAdminRecordEntries(a, b) {
 
 function attendanceStatusSummary(statuses) {
   const counts = new Map(attendanceStatuses.map((status) => [status, 0]));
-  for (const entry of statuses) counts.set(entry.status, (counts.get(entry.status) || 0) + 1);
-  return attendanceStatuses
+  for (const entry of statuses) {
+    for (const status of entry.shift1 && entry.shift2 ? [entry.shift1, entry.shift2] : [entry.status]) {
+      counts.set(status, (counts.get(status) || 0) + 1);
+    }
+  }
+  return (statuses.some((entry) => entry.shift1 && entry.shift2) ? "Shifts — " : "") + attendanceStatuses
     .filter((status) => counts.get(status))
     .map((status) => `${status}: ${counts.get(status)}`)
     .join(" / ");
@@ -1734,11 +1788,16 @@ function renderAdminRecordList(records) {
 }
 
 function hasApprovedAttendanceLetter(record, impact) {
-  return Number(impact?.points || 0) < 0 && record.approvedLetterMemberIds?.includes(impact.memberId) === true;
+  return attendanceDeductionPoints(impact) < 0 && record.approvedLetterMemberIds?.includes(impact.memberId) === true;
+}
+
+function attendanceDeductionPoints(impact) {
+  return Math.min(0, Number(impact?.penaltyPoints ?? impact?.points ?? 0));
 }
 
 function effectiveAttendancePoints(record, impact) {
-  return hasApprovedAttendanceLetter(record, impact) ? 0 : Number(impact?.points || 0);
+  const points = Number(impact?.points || 0);
+  return hasApprovedAttendanceLetter(record, impact) ? points - attendanceDeductionPoints(impact) : points;
 }
 
 function renderAttendanceLetterApprovals(recordId) {
@@ -1746,12 +1805,12 @@ function renderAttendanceLetterApprovals(recordId) {
   const record = state.attendanceRecords.find((item) => item.id === recordId);
   if (!record) return "";
   return (record.points || [])
-    .filter((impact) => Number(impact.points) < 0)
+    .filter((impact) => attendanceDeductionPoints(impact) < 0)
     .map((impact) => {
       const member = state.members.find((item) => item.id === impact.memberId);
       return `
         <div class="attendance-letter-row">
-          <span>${escapeHtml(member ? formatMember(member) : "Former member")} <span class="${pointClass(effectiveAttendancePoints(record, impact))}">(${signedPoints(effectiveAttendancePoints(record, impact))}${record.approvedLetterMemberIds?.includes(impact.memberId) ? `; ${signedPoints(impact.points)} waived` : ""})</span></span>
+          <span>${escapeHtml(member ? formatMember(member) : "Former member")} <span class="${pointClass(effectiveAttendancePoints(record, impact))}">(${signedPoints(effectiveAttendancePoints(record, impact))}${record.approvedLetterMemberIds?.includes(impact.memberId) ? `; ${signedPoints(attendanceDeductionPoints(impact))} waived` : ""})</span></span>
           <label class="check-row approved-letter-control">
             <input type="checkbox" data-approved-letter-record="${escapeHtml(record.id)}" data-approved-letter-member="${escapeHtml(impact.memberId)}" ${record.approvedLetterMemberIds?.includes(impact.memberId) ? "checked" : ""}>
             <span>Approved Letter</span>
@@ -1766,7 +1825,7 @@ function setAttendanceLetterApproval(recordId, memberId, approved) {
   const admin = currentMember();
   if (admin?.role !== "Admin") return false;
   const record = state.attendanceRecords.find((item) => item.id === recordId);
-  if (!record?.points?.some((impact) => impact.memberId === memberId && Number(impact.points) < 0)) return false;
+  if (!record?.points?.some((impact) => impact.memberId === memberId && attendanceDeductionPoints(impact) < 0)) return false;
   const approvals = new Set(record.approvedLetterMemberIds || []);
   if (approved) approvals.add(memberId);
   else approvals.delete(memberId);
@@ -1781,9 +1840,10 @@ function setAttendanceLetterApproval(recordId, memberId, approved) {
 // and a negative impact. Resubmitting attendance must not erase an unchanged approval.
 function retainedAttendanceLetterApprovals(previous, next) {
   return (previous?.approvedLetterMemberIds || []).filter((memberId) =>
-    next.points.some((impact) => impact.memberId === memberId && Number(impact.points) < 0) &&
+    next.points.some((impact) => impact.memberId === memberId && attendanceDeductionPoints(impact) < 0) &&
     previous.statuses.some((item) => item.memberId === memberId &&
-      next.statuses.some((status) => status.memberId === memberId && status.status === item.status)),
+      next.statuses.some((status) => status.memberId === memberId && status.status === item.status &&
+        status.shift1 === item.shift1 && status.shift2 === item.shift2)),
   );
 }
 
@@ -2191,7 +2251,7 @@ function renderAttendanceRecordEditModal(record) {
             <input name="date" type="date" value="${escapeHtml(record.date || todayISO())}" required>
           </label>
         </div>
-        <div class="table-wrap">
+        ${record.eventKind === "fundraiser" ? renderFundraiserAttendanceTable(members, record) : `<div class="table-wrap">
           <table>
             <thead><tr><th>Member</th><th>Status</th></tr></thead>
             <tbody>
@@ -2221,7 +2281,7 @@ function renderAttendanceRecordEditModal(record) {
                 .join("")}
             </tbody>
           </table>
-        </div>
+        </div>`}
         <label class="field">
           <span>Notes</span>
           <textarea name="notes">${escapeHtml(record.notes || "")}</textarea>
@@ -2291,6 +2351,38 @@ function bindAppEvents(member) {
   bindPointEvents(member);
   bindAdminEvents(member);
   bindModalEvents(member);
+  bindFundraiserAttendanceEvents();
+}
+
+function bindFundraiserAttendanceEvents() {
+  bindSegmentButtons("fundraiser-status-group", "fundraiser-status-choice");
+  document.querySelectorAll("[data-extra-shifts]").forEach((select) => {
+    let previousValue = select.value;
+    select.addEventListener("change", () => {
+      if (select.value !== "more") {
+        previousValue = select.value;
+        return;
+      }
+      const answer = window.prompt("How many extra shifts were worked?", "11");
+      const count = Number(answer);
+      if (answer === null || !Number.isSafeInteger(count) || count < 0) {
+        select.value = previousValue;
+        return;
+      }
+      if (![...select.options].some((option) => option.value === String(count))) {
+        select.add(new Option(String(count), String(count)), select.options.length - 1);
+      }
+      select.value = String(count);
+      previousValue = select.value;
+    });
+  });
+}
+
+function showAttendanceFormError(form, error) {
+  const notice = form.querySelector("[data-fundraiser-error]");
+  if (!notice) throw error;
+  notice.textContent = error.message;
+  notice.hidden = false;
 }
 
 function bindTrackerEvents() {
@@ -2334,7 +2426,13 @@ function bindAttendanceEvents(member) {
   document.querySelector("#attendanceForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const record = createAttendanceRecord(form, member);
+    let record;
+    try {
+      record = createAttendanceRecord(form, member);
+    } catch (error) {
+      showAttendanceFormError(event.currentTarget, error);
+      return;
+    }
     const existingIndex = state.attendanceRecords.findIndex(
       (item) => item.eventId === record.eventId && item.date === record.date,
     );
@@ -2632,7 +2730,13 @@ function bindModalEvents(member) {
 
   document.querySelector("#attendanceRecordEditForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
-    const record = updateAttendanceRecordFromForm(new FormData(event.currentTarget), member);
+    let record;
+    try {
+      record = updateAttendanceRecordFromForm(new FormData(event.currentTarget), member);
+    } catch (error) {
+      showAttendanceFormError(event.currentTarget, error);
+      return;
+    }
     if (record) {
       for (const impact of record.points) maybeCreateProbationAlert(impact.memberId);
     }
@@ -2887,17 +2991,12 @@ function updateAttendanceRecordFromForm(form, editingMember) {
   const record = state.attendanceRecords.find((item) => item.id === form.get("recordId"));
   if (!record) return null;
   const previous = { ...record };
-  const statusesForMembers = [];
-  for (const [key, value] of form.entries()) {
-    if (key.startsWith("status:") && value) {
-      statusesForMembers.push({ memberId: key.replace("status:", ""), status: String(value) });
-    }
-  }
   const event = {
     eventId: String(form.get("eventId")),
     eventKind: String(form.get("eventKind")),
     label: String(form.get("eventLabel") || record.eventLabel).trim() || record.eventLabel,
   };
+  const statusesForMembers = attendanceStatusesFromForm(form, event);
   record.eventLabel = event.label;
   record.date = String(form.get("date") || todayISO());
   record.notes = String(form.get("notes") || "").trim();
@@ -2916,12 +3015,7 @@ function createAttendanceRecord(form, recordingMember) {
     label: String(form.get("eventLabel")),
   };
   const date = String(form.get("date")) || todayISO();
-  const statusesForMembers = [];
-  for (const [key, value] of form.entries()) {
-    if (key.startsWith("status:") && value) {
-      statusesForMembers.push({ memberId: key.replace("status:", ""), status: String(value) });
-    }
-  }
+  const statusesForMembers = attendanceStatusesFromForm(form, event);
   const previous = state.attendanceRecords.find((item) => item.eventId === event.eventId && item.date === date);
   const record = {
     id: previous?.id || uid("attendance"),
@@ -2939,11 +3033,47 @@ function createAttendanceRecord(form, recordingMember) {
   return record;
 }
 
+function attendanceStatusesFromForm(form, event) {
+  if (event.eventKind !== "fundraiser") {
+    return [...form.entries()]
+      .filter(([key, value]) => key.startsWith("status:") && value)
+      .map(([key, value]) => ({ memberId: key.slice(7), status: String(value) }));
+  }
+  const entries = [];
+  for (const member of membersForAttendanceEvent(event)) {
+    const shift1 = String(form.get(`shift1:${member.id}`) || "");
+    const shift2 = String(form.get(`shift2:${member.id}`) || "");
+    const extraShifts = Number(form.get(`extraShifts:${member.id}`) || 0);
+    if (![shift1, shift2].every((status) => attendanceStatuses.includes(status))) {
+      throw new Error(`Select Shift 1 and Shift 2 attendance for ${formatMember(member)}.`);
+    }
+    if (!Number.isSafeInteger(extraShifts) || extraShifts < 0) {
+      throw new Error(`Extra Shifts Worked must be a nonnegative whole number for ${formatMember(member)}.`);
+    }
+    const status = [shift1, shift2].includes("Absent") ? "Absent" : [shift1, shift2].includes("Late") ? "Late" : "Present";
+    entries.push({ memberId: member.id, status, shift1, shift2, extraShifts });
+  }
+  return entries;
+}
+
 function attendancePointImpacts(event, statusesForMembers) {
   const impacts = [];
   for (const entry of statusesForMembers) {
     const member = state.members.find((item) => item.id === entry.memberId);
     if (!member) continue;
+    if (event.eventKind === "fundraiser" && entry.shift1 && entry.shift2) {
+      const shifts = [entry.shift1, entry.shift2].map((status) => pointsForAttendanceStatus(event, member, status));
+      const penaltyPoints = shifts.reduce((sum, shift) => sum + shift.points, 0);
+      const bonusPoints = entry.extraShifts * ruleImpact("positive", "multiple-fundraiser-shifts").points;
+      impacts.push({
+        memberId: member.id,
+        points: penaltyPoints + bonusPoints,
+        penaltyPoints,
+        bonusPoints,
+        note: `Shift 1: ${signedPoints(shifts[0].points)}; Shift 2: ${signedPoints(shifts[1].points)}; Extra shifts: ${signedPoints(bonusPoints)}`,
+      });
+      continue;
+    }
     const result = pointsForAttendanceStatus(event, member, entry.status);
     if (!result || result.points === 0) continue;
     impacts.push({
@@ -2970,14 +3100,14 @@ function pointsForAttendanceStatus(event, member, status) {
   }
 
   if (status === "Late") {
-    if (event.eventKind === "fundraiser") return conditionalImpact(member, "negative", "late-fundraiser");
+    if (event.eventKind === "fundraiser") return ruleImpact("negative", "late-fundraiser");
     if (event.eventKind === "committee") return conditionalImpact(member, "negative", "late-committee");
     if (event.eventKind === "band" || event.eventKind === "custom-band") return conditionalImpact(member, "negative", "late-band");
     return conditionalImpact(member, "negative", "late-meeting");
   }
 
   if (status === "Absent") {
-    if (event.eventKind === "fundraiser") return conditionalImpact(member, "negative", "missed-fundraiser");
+    if (event.eventKind === "fundraiser") return ruleImpact("negative", "missed-fundraiser");
     if (event.eventKind === "committee") return conditionalImpact(member, "negative", "absent-committee");
     if (event.eventKind === "band" || event.eventKind === "custom-band") return conditionalImpact(member, "negative", "absent-band");
     if (event.eventKind === "function") {
