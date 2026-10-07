@@ -11,6 +11,10 @@ The app currently stores data in the browser on this device. Email alerts are pr
 
 ## Conditional member attendance policy
 
-Conditional members receive no negative points for absences from any event, whether mandatory or optional. This includes each required fundraiser shift and absence rules submitted through Submit Points. Existing late-attendance rules and extra-shift bonuses still apply.
+Conditional members receive no automatic attendance deductions for absences or lateness from any event, whether mandatory or optional. This includes each required fundraiser shift. Extra-shift bonuses still apply.
+
+When an Admin changes an existing member from Active to Conditional, a negative current-term balance is offset once with a positive point record named **Conditional Member Override**, bringing that term's balance to zero. All previous records remain unchanged. Positive and zero balances receive no adjustment; creating a Conditional member or saving an already-Conditional member also creates no override.
+
+The override is a recorded adjustment, not a permanent minimum balance. Subsequent negative points explicitly submitted through Submit Points by Admin or Executive Members remain in effect and can take the balance below zero. Opening the tracker, reloading, or saving the same Conditional status does not generate another override.
 
 Attendance is scored when submitted or edited. Previously saved records retain their recorded scores until edited and saved; member status at the time of an older event is not stored.

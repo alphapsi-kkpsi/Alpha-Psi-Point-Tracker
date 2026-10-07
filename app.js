@@ -23,13 +23,6 @@ const bandSections = [
   "Drum Majors/Marching Techs",
 ];
 const committees = ["M&E", "W&M", "S&B", "A&P", "H&T"];
-const absenceRuleIds = new Set([
-  "missed-fundraiser",
-  "missed-mandatory-function",
-  "absent-committee",
-  "absent-meeting",
-  "absent-band",
-]);
 const conditionalIgnoredActions = new Set([
   "Late to Committee Meeting Without Approved Letter",
   "Late to Meeting / Song Rehearsal Without Approved Letter",
@@ -2777,9 +2770,12 @@ function bindModalEvents(member) {
 
   document.querySelector("#memberForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (currentMember()?.role !== "Admin") return;
     const form = new FormData(event.currentTarget);
     const memberData = memberFromForm(form);
     const existingIndex = state.members.findIndex((item) => item.id === memberData.id);
+    const previous = existingIndex >= 0 ? state.members[existingIndex] : null;
+    addConditionalMemberOverride(previous, memberData, member);
     if (existingIndex >= 0) state.members.splice(existingIndex, 1, memberData);
     else state.members.push(memberData);
     syncLoginForMember(memberData);
@@ -2926,6 +2922,30 @@ function bindSegmentButtons(groupAttr, choiceAttr) {
 
 function toDatasetKey(attr) {
   return attr.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+}
+
+function addConditionalMemberOverride(previous, next, recordingMember) {
+  // This is a single adjustment at a real status transition, never a running floor.
+  if (currentMember()?.role !== "Admin" || previous?.status !== "Active" || next.status !== "Conditional") return null;
+  const date = todayISO();
+  const term = getTerm(date);
+  const range = getTermDateRange(term);
+  const balance = totalPointsForRange(previous.id, range.start, range.end);
+  if (balance >= 0) return null;
+  const record = {
+    id: uid("point"),
+    memberId: previous.id,
+    type: "positive",
+    actionId: "conditional-member-override",
+    actionName: "Conditional Member Override",
+    points: -balance,
+    notes: `Active to Conditional status change. ${term} balance before override: ${signedPoints(balance)}. Starting balance: 0.`,
+    date,
+    recordingMemberId: recordingMember.id,
+    createdAt: new Date().toISOString(),
+  };
+  state.pointRecords.push(record);
+  return record;
 }
 
 function memberFromForm(form) {
@@ -3093,9 +3113,9 @@ function attendancePointImpacts(event, statusesForMembers) {
 }
 
 function pointsForAttendanceStatus(event, member, status) {
-  // Conditional status exempts every absence, including individual fundraiser shifts.
-  if (status === "Absent" && member.status === "Conditional") {
-    return { points: 0, action: "Absence exempt for Conditional status" };
+  // Automatic attendance exemptions never alter already-stored records or manual deductions.
+  if ((status === "Absent" || status === "Late") && member.status === "Conditional") {
+    return { points: 0, action: `${status === "Absent" ? "Absence" : "Lateness"} exempt for Conditional status` };
   }
   if (status === "Present") {
     if (event.eventKind === "function") {
@@ -3155,10 +3175,6 @@ function createPointRecord(form, recordingMember, type) {
   }
   if (rule?.value === null) {
     points = Number(form.get("discretionPoints") || 0);
-  }
-  const selectedMember = state.members.find((member) => member.id === form.get("memberId"));
-  if (selectedMember?.status === "Conditional" && absenceRuleIds.has(rule?.id) && points < 0) {
-    points = 0;
   }
   return {
     id: uid("point"),
