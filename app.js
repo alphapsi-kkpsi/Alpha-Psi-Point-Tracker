@@ -853,7 +853,7 @@ function recordsForRange(start, end) {
         createdAt: record.createdAt,
         recordingMemberId: record.recordingMemberId,
         notes: [status.status, impact?.note, record.notes].filter(Boolean).join(" - "),
-        points: impact?.points || 0,
+        points: effectiveAttendancePoints(record, impact),
         source: "Attendance",
       });
     }
@@ -1183,7 +1183,7 @@ function renderAttendanceSubmissionSummary(record) {
                   <tr>
                     <td>${escapeHtml(formatMember(row.member))}</td>
                     <td>${escapeHtml(row.status)}</td>
-                    <td class="${pointClass(row.impact?.points || 0)}">${signedPoints(row.impact?.points || 0)}</td>
+                    <td class="${pointClass(effectiveAttendancePoints(record, row.impact))}">${signedPoints(effectiveAttendancePoints(record, row.impact))}</td>
                     <td>${escapeHtml(row.impact?.note || row.status)}</td>
                   </tr>
                 `,
@@ -1680,6 +1680,7 @@ function attendanceStatusSummary(statuses) {
 }
 
 function renderAdminRecordList(records) {
+  if (currentMember()?.role !== "Admin") return "";
   if (!records.length) return `<div class="empty">No records in this week.</div>`;
   return `
     <div class="record-list admin-record-list">
@@ -1700,6 +1701,7 @@ function renderAdminRecordList(records) {
               <div class="${record.recordType === "point" ? pointClass(record.points) : ""}">${escapeHtml(details)}</div>
               <div class="muted">${prettyDate(record.date)} at ${prettyTime(record.createdAt)} - Recorded by ${escapeHtml(formatMember(recorder || {}))}</div>
               ${record.notes ? `<div class="muted">${escapeHtml(record.notes)}</div>` : ""}
+              ${record.recordType === "attendance" ? renderAttendanceLetterApprovals(record.id) : ""}
               <div class="record-actions">
                 <button class="secondary small-action" data-edit-record-type="${record.recordType}" data-edit-record-id="${record.id}">Edit</button>
                 <button class="danger small-action" data-delete-admin-record-type="${record.recordType}" data-delete-admin-record-id="${record.id}">Delete</button>
@@ -1710,6 +1712,57 @@ function renderAdminRecordList(records) {
         .join("")}
     </div>
   `;
+}
+
+function effectiveAttendancePoints(record, impact) {
+  const points = Number(impact?.points || 0);
+  return points < 0 && record.approvedLetterMemberIds?.includes(impact.memberId) ? 0 : points;
+}
+
+function renderAttendanceLetterApprovals(recordId) {
+  if (currentMember()?.role !== "Admin") return "";
+  const record = state.attendanceRecords.find((item) => item.id === recordId);
+  if (!record) return "";
+  return (record.points || [])
+    .filter((impact) => Number(impact.points) < 0)
+    .map((impact) => {
+      const member = state.members.find((item) => item.id === impact.memberId);
+      return `
+        <div class="attendance-letter-row">
+          <span>${escapeHtml(member ? formatMember(member) : "Former member")} <span class="${pointClass(effectiveAttendancePoints(record, impact))}">(${signedPoints(effectiveAttendancePoints(record, impact))}${record.approvedLetterMemberIds?.includes(impact.memberId) ? `; ${signedPoints(impact.points)} waived` : ""})</span></span>
+          <label class="check-row approved-letter-control">
+            <input type="checkbox" data-approved-letter-record="${escapeHtml(record.id)}" data-approved-letter-member="${escapeHtml(impact.memberId)}" ${record.approvedLetterMemberIds?.includes(impact.memberId) ? "checked" : ""}>
+            <span>Approved Letter</span>
+          </label>
+        </div>
+      `;
+    })
+    .join("");
+}
+
+function setAttendanceLetterApproval(recordId, memberId, approved) {
+  const admin = currentMember();
+  if (admin?.role !== "Admin") return false;
+  const record = state.attendanceRecords.find((item) => item.id === recordId);
+  if (!record?.points?.some((impact) => impact.memberId === memberId && Number(impact.points) < 0)) return false;
+  const approvals = new Set(record.approvedLetterMemberIds || []);
+  if (approved) approvals.add(memberId);
+  else approvals.delete(memberId);
+  record.approvedLetterMemberIds = [...approvals];
+  record.updatedAt = new Date().toISOString();
+  record.updatedByMemberId = admin.id;
+  saveState();
+  return true;
+}
+
+// Keep approval only while the same member still has the approved attendance status
+// and a negative impact. Resubmitting attendance must not erase an unchanged approval.
+function retainedAttendanceLetterApprovals(previous, next) {
+  return (previous?.approvedLetterMemberIds || []).filter((memberId) =>
+    next.points.some((impact) => impact.memberId === memberId && Number(impact.points) < 0) &&
+    previous.statuses.some((item) => item.memberId === memberId &&
+      next.statuses.some((status) => status.memberId === memberId && status.status === item.status)),
+  );
 }
 
 function renderMemberAdmin() {
@@ -2308,6 +2361,12 @@ function updatePointFormFields() {
 }
 
 function bindAdminEvents(member) {
+  document.querySelectorAll("[data-approved-letter-record]").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      setAttendanceLetterApproval(checkbox.dataset.approvedLetterRecord, checkbox.dataset.approvedLetterMember, checkbox.checked);
+      render();
+    });
+  });
   document.querySelectorAll("[data-admin-section]").forEach((button) => {
     button.addEventListener("click", () => {
       view.adminSection = button.dataset.adminSection;
@@ -2789,8 +2848,10 @@ function updatePointRecordFromForm(form, editingMember) {
 }
 
 function updateAttendanceRecordFromForm(form, editingMember) {
+  if (currentMember()?.role !== "Admin") return null;
   const record = state.attendanceRecords.find((item) => item.id === form.get("recordId"));
   if (!record) return null;
+  const previous = { ...record };
   const statusesForMembers = [];
   for (const [key, value] of form.entries()) {
     if (key.startsWith("status:") && value) {
@@ -2807,6 +2868,7 @@ function updateAttendanceRecordFromForm(form, editingMember) {
   record.notes = String(form.get("notes") || "").trim();
   record.statuses = statusesForMembers;
   record.points = attendancePointImpacts(event, statusesForMembers);
+  record.approvedLetterMemberIds = retainedAttendanceLetterApprovals(previous, record);
   record.updatedAt = new Date().toISOString();
   record.updatedByMemberId = editingMember.id;
   return record;
@@ -2825,8 +2887,9 @@ function createAttendanceRecord(form, recordingMember) {
       statusesForMembers.push({ memberId: key.replace("status:", ""), status: String(value) });
     }
   }
-  return {
-    id: uid("attendance"),
+  const previous = state.attendanceRecords.find((item) => item.eventId === event.eventId && item.date === date);
+  const record = {
+    id: previous?.id || uid("attendance"),
     eventId: event.eventId,
     eventKind: event.eventKind,
     eventLabel: event.label,
@@ -2837,6 +2900,8 @@ function createAttendanceRecord(form, recordingMember) {
     recordingMemberId: recordingMember.id,
     createdAt: new Date().toISOString(),
   };
+  record.approvedLetterMemberIds = retainedAttendanceLetterApprovals(previous, record);
+  return record;
 }
 
 function attendancePointImpacts(event, statusesForMembers) {

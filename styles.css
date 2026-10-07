@@ -576,6 +576,22 @@ textarea:focus {
   margin-top: 4px;
 }
 
+.attendance-letter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+
+.approved-letter-control {
+  margin: 0;
+  color: var(--text);
+  cursor: pointer;
+}
+
 .record-actions .small-action {
   width: auto;
   min-width: 92px;
