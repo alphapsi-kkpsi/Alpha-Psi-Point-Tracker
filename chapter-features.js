@@ -37,7 +37,7 @@
     if(!canViewAllPoints(member)||!view.trackerMemberId) return html;
     return html.replace('data-clear-tracker-member', 'data-clear-tracker-member').replace('<div class="divider"></div>',fullButton(view.trackerMemberId)+'<div class="divider"></div>');
   };
-  renderAdmin = function(member) {return oldAdmin(member).replace('</div>\n    '+renderAdminSection(member),'<button class="secondary small-action" data-admin-section="settings">Settings</button></div>\n    '+renderAdminSection(member));};
+  renderAdmin = function(member) {return oldAdmin(member).replace(/(<button class="[^"]*" data-admin-section="members">Member Info & Permissions<\/button>)/, '$1<button class="'+(view.adminSection==='settings'?'active':'')+'" data-admin-section="settings">Settings</button>');};
   function settingsForm() {
     const s=settings();
     return '<form id="chapterSettingsForm" class="panel stack"><h2>Chapter Settings</h2><p class="muted">These settings affect future submissions. Previously recorded points are preserved.</p>'+
