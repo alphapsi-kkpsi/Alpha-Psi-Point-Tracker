@@ -124,6 +124,7 @@ function createDefaultState() {
         assignedMemberIds: [],
       },
     ],
+    settings: defaultSystemSettings(),
     fundraisers: [],
     fundraiserShiftRulesVersion: 1,
     customBandEnsembles: [],
@@ -179,6 +180,7 @@ function normalizeState(saved) {
   return {
     ...defaults,
     ...saved,
+    settings: { ...defaultSystemSettings(), ...(saved.settings || {}) },
     members,
     loginCredentials: normalizeLoginCredentials(saved.loginCredentials || defaults.loginCredentials, members),
     pointRules: {
@@ -208,6 +210,7 @@ function normalizeState(saved) {
       mandatory: true,
     })),
     customBandEnsembles: (saved.customBandEnsembles || []).map((item) => ({
+      ...item,
       id: item.id || uid("band"),
       title: item.title || "Band Ensemble",
     })),
@@ -246,7 +249,7 @@ function mergeRules(defaultRules, savedRules = []) {
   return defaultRules.map((rule) => {
     const saved = savedRules.find((item) => item.id === rule.id);
     return saved ? { ...rule, ...saved } : rule;
-  });
+  }).concat(savedRules.filter((saved) => !defaultRules.some((rule) => rule.id === saved.id)));
 }
 
 function normalizeEmail(value) {
@@ -403,19 +406,19 @@ function prettyTime(value) {
 function getAcademicYear(dateValue) {
   const date = parseDate(dateValue);
   const year = date.getFullYear();
-  return date.getMonth() >= 7 ? `${year}-${year + 1}` : `${year - 1}-${year}`;
+  return date.getMonth() >= systemSettings().fallStartMonth - 1 ? `${year}-${year + 1}` : `${year - 1}-${year}`;
 }
 
 function getTerm(dateValue) {
   const date = parseDate(dateValue);
   const year = date.getFullYear();
-  return date.getMonth() >= 7 ? `Fall ${year}` : `Spring ${year}`;
+  return date.getMonth() >= systemSettings().fallStartMonth - 1 ? `Fall ${year}` : `Spring ${year}`;
 }
 
 function getWeekRange(dateValue) {
   const date = parseDate(dateValue);
   const day = date.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
+  const diff = -((day - systemSettings().weekStartsOn + 7) % 7);
   const start = new Date(date);
   start.setDate(date.getDate() + diff);
   const end = new Date(start);
@@ -431,8 +434,10 @@ function getWeekRange(dateValue) {
 function getTermDateRange(termLabel) {
   const [term, yearText] = termLabel.split(" ");
   const year = Number(yearText);
-  if (term === "Fall") return { start: `${year}-08-01`, end: `${year}-12-31` };
-  return { start: `${year}-01-01`, end: `${year}-05-31` };
+  const month = systemSettings().fallStartMonth;
+  const boundary = `${year}-${String(month).padStart(2,"0")}-01`;
+  if (term === "Fall") return { start: boundary, end: `${year}-12-31` };
+  return { start: `${year}-01-01`, end: toISO(new Date(year, month - 1, 0, 12)) };
 }
 
 function isInRange(dateValue, start, end) {
@@ -454,10 +459,10 @@ function pointClass(value) {
 
 function allowedTabs(member) {
   const tabs = [{ id: "tracker", label: "Point Tracker" }];
-  if (member.role === "Admin" || member.role === "Executive Member" || hasAttendancePermission(member)) {
+  if (member.role === "Admin" || (member.role === "Executive Member" && systemSettings().executiveAttendance) || (member.role === "Brother" && hasAttendancePermission(member))) {
     tabs.push({ id: "attendance", label: "Submit Attendance" });
   }
-  if (member.role === "Admin" || member.role === "Executive Member") {
+  if (member.role === "Admin" || (member.role === "Executive Member" && systemSettings().executivePoints)) {
     tabs.push({ id: "points", label: "Submit Points" });
   }
   if (member.role === "Admin") {
@@ -467,7 +472,7 @@ function allowedTabs(member) {
 }
 
 function allCommittees() {
-  return [...committees, ...state.customCommittees.map((item) => item.title)];
+  return allCommitteeNames().filter((name) => !systemSettings().inactiveCommittees.includes(name));
 }
 
 function committeeKey(label) {
@@ -539,7 +544,7 @@ function render() {
             <span>AP</span>
           </div>
           <div class="topbar-title">
-            <strong>Alpha Psi Point Tracker</strong>
+            <strong>${escapeHtml(systemSettings().chapterName)}</strong>
             <span>${escapeHtml(formatMember(member))} - ${escapeHtml(member.role)}</span>
           </div>
         </div>
@@ -626,6 +631,7 @@ function renderContent(member) {
 }
 
 function renderTracker(member) {
+  if (view.fullReport) return renderFullRecordReport(member);
   const path = view.trackerPath;
   const title = path.length ? path[path.length - 1].label : "Point Tracker";
   return `
@@ -642,6 +648,7 @@ function renderTracker(member) {
         }
       </div>
     </div>
+    ${path.length < 3 ? fullRecordReportButton(canViewAllPoints(member) ? view.trackerMemberId : member.id) : ""}
     ${renderTrackerLevel(member)}
   `;
 }
@@ -754,6 +761,7 @@ function renderButtonList(items, emptyText) {
                     </button>
                   `
               }
+              ${item.action === "admin-record-pick" && currentMember()?.role === "Admin" ? periodDownloadButton({...JSON.parse(item.value), ...(JSON.parse(item.value).type === "week" ? {term:view.adminRecordsPath[1]?.label} : {})}) : ""}
               ${
                 item.deleteAction
                   ? `<button class="icon-button danger row-delete" data-action="${item.deleteAction}" data-value="${escapeHtml(item.deleteValue || item.value)}" aria-label="Delete ${escapeHtml(item.label)}">Delete</button>`
@@ -771,7 +779,7 @@ function renderTrackerDetail(member, termLabel, week) {
   const range = getTermDateRange(termLabel);
   const selectedWeek = normalizeWeekSelection(week);
   const chapterTermPoints = totalPointsForRange(null, range.start, range.end);
-  const weekRecords = recordsForRange(selectedWeek.start, selectedWeek.end);
+  const weekRecords = recordsForRange(selectedWeek.start > range.start ? selectedWeek.start : range.start, selectedWeek.end < range.end ? selectedWeek.end : range.end);
 
   if (canViewAllPoints(member)) {
     const selected = state.members.find((item) => item.id === view.trackerMemberId);
@@ -782,6 +790,7 @@ function renderTrackerDetail(member, termLabel, week) {
           <div class="metric"><span>${escapeHtml(formatMember(selected))}</span><strong>${totalPointsForRange(selected.id, range.start, range.end)}</strong></div>
           <div class="metric"><span>Chapter Points</span><strong>${chapterTermPoints}</strong></div>
         </div>
+        ${fullRecordReportButton(selected.id)}
         <button class="secondary small-action" data-clear-tracker-member>All Members</button>
         <div class="divider"></div>
         ${renderRecordLog(selectedRecords, "No records for this member in this week.")}
@@ -799,6 +808,7 @@ function renderTrackerDetail(member, termLabel, week) {
         <div class="metric"><span>Chapter Points</span><strong>${chapterTermPoints}</strong></div>
         <div class="metric"><span>Selected Week</span><strong>${escapeHtml(selectedWeek.label)}</strong></div>
       </div>
+      ${fullRecordReportButton(member.id)}
       <div class="table-wrap">
         <table>
           <thead><tr><th>Member</th><th>Term Total</th><th>Records This Week</th></tr></thead>
@@ -826,6 +836,7 @@ function renderTrackerDetail(member, termLabel, week) {
       <div class="metric"><span>Personal Points</span><strong>${totalPointsForRange(member.id, range.start, range.end)}</strong></div>
       <div class="metric"><span>Chapter Points</span><strong>${chapterTermPoints}</strong></div>
     </div>
+    ${fullRecordReportButton(member.id)}
     ${renderRecordLog(personalRecords, "No records for this week.")}
   `;
 }
@@ -847,6 +858,7 @@ function recordsForRange(start, end) {
   const pointRecords = state.pointRecords
     .filter((record) => isInRange(record.date, start, end))
     .map((record) => ({
+      id: record.id,
       memberId: record.memberId,
       title: record.actionName,
       date: record.date,
@@ -864,6 +876,7 @@ function recordsForRange(start, end) {
       const impact = impactsByMember.get(status.memberId);
       const approvedLetterOverride = hasApprovedAttendanceLetter(record, impact);
       attendanceRecords.push({
+        id: record.id,
         memberId: status.memberId,
         title: record.eventLabel,
         date: record.date,
@@ -877,7 +890,7 @@ function recordsForRange(start, end) {
       });
     }
   }
-  return [...pointRecords, ...attendanceRecords].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return [...pointRecords, ...attendanceRecords].sort(sortAdminRecordEntries);
 }
 
 function renderRecordLog(records, emptyText) {
@@ -961,20 +974,20 @@ function attendanceChoices(member, path, adminMode) {
 
   if (path.length === 0) {
     const items = [];
-    if (fullAccess || bandSections.some((section) => permissions[section]) || permissions["Concert Band"] || permissions["Symphonic Band"]) {
+    if (fullAccess || currentBandSections().some((section) => permissions[section]) || permissions["Concert Band"] || permissions["Symphonic Band"]) {
       items.push({ type: "category", label: "Band Ensembles", meta: "Marching, concert, symphonic" });
     }
-    if (fullAccess) items.push({ type: "business", label: "Business Meetings", meta: "Fridays at 1:30pm" });
+    if (fullAccess) items.push({ type: "business", label: "Business Meetings", meta: `${weekDays[systemSettings().businessDay]}s at ${formatMeetingTime(systemSettings().businessTime)}` });
     if (fullAccess) items.push({ type: "committees", label: "Committee Meetings", meta: allCommittees().join(", ") });
     if (fullAccess) items.push({ type: "functions", label: "Functions", meta: `${state.functions.length} listed` });
     if (fullAccess) items.push({ type: "fundraisers", label: "Fundraisers", meta: `${state.fundraisers.length} listed` });
-    return { items };
+    return { items: items.filter((item) => !systemSettings().hiddenAttendanceCategories.includes(item.type)) };
   }
 
   const first = path[0].type;
   if (first === "category" && path.length === 1) {
     const items = [];
-    if (fullAccess || bandSections.some((section) => permissions[section])) {
+    if (fullAccess || currentBandSections().some((section) => permissions[section])) {
       items.push({ type: "ensemble", label: "Marching Band", meta: "Sections" });
     }
     if (fullAccess || permissions["Concert Band"]) {
@@ -997,12 +1010,12 @@ function attendanceChoices(member, path, adminMode) {
         });
       }
     }
-    return { items };
+    return { items: items.filter((item) => !systemSettings().inactiveEnsembles.includes(item.eventId || "marching-band")) };
   }
 
   if (first === "category" && path[1]?.type === "ensemble" && path.length === 2) {
     return {
-      items: bandSections
+      items: currentBandSections()
         .filter((section) => fullAccess || permissions[section])
         .map((section) => ({
           type: "event",
@@ -1048,7 +1061,7 @@ function attendanceChoices(member, path, adminMode) {
         .map((item) => ({
           type: "event",
           label: item.title,
-          meta: `${prettyDate(item.date)} - ${isFundraiser || item.mandatory ? "Mandatory" : "Optional"}`,
+          meta: `${prettyDate(item.date)} - ${(isFundraiser ? systemSettings().fundraisersMandatory : item.mandatory) ? "Mandatory" : "Optional"}`,
           eventKind: isFundraiser ? "fundraiser" : "function",
           eventId: item.id,
           date: item.date,
@@ -1067,7 +1080,7 @@ function currentTermFridays() {
   const end = parseDate(range.end);
   const dates = [];
   const cursor = new Date(start);
-  while (cursor.getDay() !== 5) cursor.setDate(cursor.getDate() + 1);
+  while (cursor.getDay() !== systemSettings().businessDay) cursor.setDate(cursor.getDate() + 1);
   while (cursor <= end) {
     dates.push(toISO(cursor));
     cursor.setDate(cursor.getDate() + 7);
@@ -1080,7 +1093,7 @@ function businessMeetingItems(adminMode) {
   const generated = currentTermFridays().map((date) => ({
     type: "event",
     label: `Business Meeting - ${prettyDate(date)}`,
-    meta: "Friday, 1:30pm",
+    meta: `${weekDays[systemSettings().businessDay]}, ${formatMeetingTime(systemSettings().businessTime)}`,
     eventKind: "business",
     eventId: `business-${date}`,
     date,
@@ -1180,15 +1193,17 @@ function renderAttendanceEventForm(member, event) {
 }
 
 function attendanceStatusLabel(entry) {
-  if (!entry.shift1 || !entry.shift2) return entry.status;
-  return `Shift 1: ${entry.shift1} · Shift 2: ${entry.shift2} · Extra Shifts Worked: ${entry.extraShifts || 0}`;
+  const shifts = fundraiserShiftStatuses(entry);
+  if (!shifts.length) return entry.status;
+  return `${shifts.map((status, index) => `Shift ${index + 1}: ${status}`).join(" · ")} · Extra Shifts Worked: ${entry.extraShifts || 0}`;
 }
 
 function renderFundraiserAttendanceTable(members, record, locked = false) {
   const saved = new Map((record?.statuses || []).map((entry) => [entry.memberId, entry]));
+  const config = fundraiserConfiguration(record);
   return `
-    <p class="muted">Two shifts are required per member. Record each shift separately.</p>
-    ${record && record.statuses.some((entry) => !entry.shift1 || !entry.shift2) ? `<p class="notice">This older record has one attendance status per member. Select both shifts to update it.</p>` : ""}
+    <p class="muted">Record ${config.requiredShiftCount} shifts per member. ${config.fundraiserMandatory ? "Attendance is mandatory." : "Attendance is optional; absence deductions are waived."}</p>
+    ${record && record.statuses.some((entry) => !fundraiserShiftStatuses(entry).length) ? `<p class="notice">This older record has one attendance status per member. Select each shift to update it.</p>` : ""}
     <div class="table-wrap"><table>
       <thead><tr><th>Member</th><th>Shifts</th></tr></thead>
       <tbody>${members.map((member) => {
@@ -1198,21 +1213,21 @@ function renderFundraiserAttendanceTable(members, record, locked = false) {
         return `<tr>
           <td>${escapeHtml(formatMember(member))}<br><span class="muted">${escapeHtml(member.role)}</span></td>
           <td><div class="fundraiser-shifts">
-            ${[1, 2].map((shift) => `<div class="fundraiser-shift-row">
+            ${Array.from({length: config.requiredShiftCount}, (_, index) => index + 1).map((shift) => `<div class="fundraiser-shift-row">
               <span>Shift ${shift}</span>
               <div>
                 <div class="segment" data-fundraiser-status-group="${escapeHtml(member.id)}-${shift}" role="group" aria-label="${escapeHtml(formatMember(member))} Shift ${shift}">
-                  ${attendanceStatuses.map((status) => `<button type="button" data-fundraiser-status-choice="${status}" class="${entry[`shift${shift}`] === status ? "active" : ""}" ${locked ? "disabled" : ""}>${status}</button>`).join("")}
+                  ${attendanceStatuses.map((status) => `<button type="button" data-fundraiser-status-choice="${status}" class="${fundraiserShiftStatuses(entry)[shift - 1] === status ? "active" : ""}" ${locked ? "disabled" : ""}>${status}</button>`).join("")}
                 </div>
-                <input type="hidden" name="shift${shift}:${escapeHtml(member.id)}" value="${escapeHtml(entry[`shift${shift}`] || "")}">
+                <input type="hidden" name="shift${shift}:${escapeHtml(member.id)}" value="${escapeHtml(fundraiserShiftStatuses(entry)[shift - 1] || "")}">
               </div>
             </div>`).join("")}
-            <label class="field"><span>Extra Shifts Worked</span>
+            ${config.extraShiftsEnabled ? `<label class="field"><span>Extra Shifts Worked</span>
               <select name="extraShifts:${escapeHtml(member.id)}" data-extra-shifts aria-label="Extra Shifts Worked for ${escapeHtml(formatMember(member))}" ${locked ? "disabled" : ""}>
                 ${options.map((count) => `<option value="${count}" ${extras === count ? "selected" : ""}>${count}</option>`).join("")}
                 <option value="more">More…</option>
               </select>
-            </label>
+            </label>` : ""}
           </div></td>
         </tr>`;
       }).join("")}</tbody>
@@ -1265,7 +1280,10 @@ function membersForAttendanceEvent(event) {
   if (event.eventKind === "business") return [...state.members].sort(memberSort);
   if (event.eventKind === "function") return [...state.members].sort(memberSort);
   if (event.eventKind === "fundraiser") return [...state.members].sort(memberSort);
-  if (event.eventKind === "custom-band") return [...state.members].sort(memberSort);
+  if (event.eventKind === "custom-band") {
+    const ensemble = state.customBandEnsembles.find((item) => item.id === event.eventId);
+    return state.members.filter((member) => ensemble?.rosterMode !== "assigned" || member.assignments?.customEnsembles?.includes(event.eventId)).sort(memberSort);
+  }
   if (event.eventKind === "committee") {
     const committee = event.label;
     return state.members.filter((member) => member.assignments?.committee === committee).sort(memberSort);
@@ -1273,7 +1291,7 @@ function membersForAttendanceEvent(event) {
   if (event.eventKind === "band") {
     const label = event.label;
     return state.members.filter((member) => {
-      if (bandSections.includes(label)) {
+      if (currentBandSections().includes(label)) {
         return member.assignments?.marchingBand && member.assignments?.section === label;
       }
       if (label === "Concert Band") return member.assignments?.concertBand;
@@ -1378,6 +1396,7 @@ function sortedRules(type) {
 }
 
 function renderAdmin(member) {
+  if (member.role !== "Admin") return "";
   return `
     <div class="section-head">
       <div>
@@ -1386,6 +1405,7 @@ function renderAdmin(member) {
       </div>
     </div>
     <div class="admin-tabs">
+      <button class="${view.adminSection === "settings" ? "active" : ""}" data-admin-section="settings">Settings</button>
       <button class="${view.adminSection === "attendance" ? "active" : ""}" data-admin-section="attendance">Attendance Events</button>
       <button class="${view.adminSection === "points" ? "active" : ""}" data-admin-section="points">Point Assignments</button>
       <button class="${view.adminSection === "records" ? "active" : ""}" data-admin-section="records">Records</button>
@@ -1396,6 +1416,8 @@ function renderAdmin(member) {
 }
 
 function renderAdminSection(member) {
+  if (member.role !== "Admin") return "";
+  if (view.adminSection === "settings") return renderSystemSettings();
   if (view.adminSection === "attendance") return renderAdminAttendance(member);
   if (view.adminSection === "points") return renderAdminPointRules();
   if (view.adminSection === "records") return renderAdminRecords();
@@ -1467,7 +1489,7 @@ function renderFunctionEditor(item, eventKind = "function") {
           <span>Date</span>
           <input name="date" type="date" value="${escapeHtml(item.date || todayISO())}">
         </label>
-        ${isFundraiser ? `<p class="muted">All fundraisers are mandatory.</p>` : `<label class="field">
+        ${isFundraiser ? `<p class="muted">${systemSettings().fundraisersMandatory ? "Fundraisers are mandatory." : "Fundraisers are optional."} Change this in Admin → Settings.</p>` : `<label class="field">
           <span>Function Type</span>
           <select name="mandatory" aria-label="Function type">
           <option value="true" ${item.mandatory ? "selected" : ""}>Mandatory</option>
@@ -1606,6 +1628,7 @@ function renderAdminRecords() {
       </div>
       ${path.length ? `<button class="secondary small-action" data-admin-records-back>Back</button>` : ""}
     </div>
+    ${path.length ? periodDownloadButton({...path[path.length - 1], ...(path.length === 3 ? {term:path[1].label} : {})}) : ""}
     <div class="admin-records-view">
       ${renderAdminRecordLevel(path)}
     </div>
@@ -1654,7 +1677,8 @@ function renderAdminRecordLevel(path) {
   }
 
   const selectedWeek = normalizeWeekSelection(path[2]);
-  return renderAdminRecordList(adminRecordsForRange(selectedWeek.start, selectedWeek.end));
+  const termRange = getTermDateRange(path[1].label);
+  return renderAdminRecordList(adminRecordsForRange(selectedWeek.start > termRange.start ? selectedWeek.start : termRange.start, selectedWeek.end < termRange.end ? selectedWeek.end : termRange.end));
 }
 
 function availableRecordTimeline() {
@@ -1742,11 +1766,11 @@ function sortAdminRecordEntries(a, b) {
 function attendanceStatusSummary(statuses) {
   const counts = new Map(attendanceStatuses.map((status) => [status, 0]));
   for (const entry of statuses) {
-    for (const status of entry.shift1 && entry.shift2 ? [entry.shift1, entry.shift2] : [entry.status]) {
+    for (const status of fundraiserShiftStatuses(entry).length ? fundraiserShiftStatuses(entry) : [entry.status]) {
       counts.set(status, (counts.get(status) || 0) + 1);
     }
   }
-  return (statuses.some((entry) => entry.shift1 && entry.shift2) ? "Shifts — " : "") + attendanceStatuses
+  return (statuses.some((entry) => fundraiserShiftStatuses(entry).length) ? "Shifts — " : "") + attendanceStatuses
     .filter((status) => counts.get(status))
     .map((status) => `${status}: ${counts.get(status)}`)
     .join(" / ");
@@ -1843,7 +1867,7 @@ function retainedAttendanceLetterApprovals(previous, next) {
     next.points.some((impact) => impact.memberId === memberId && attendanceDeductionPoints(impact) < 0) &&
     previous.statuses.some((item) => item.memberId === memberId &&
       next.statuses.some((status) => status.memberId === memberId && status.status === item.status &&
-        status.shift1 === item.shift1 && status.shift2 === item.shift2)),
+        JSON.stringify(fundraiserShiftStatuses(status)) === JSON.stringify(fundraiserShiftStatuses(item)))),
   );
 }
 
@@ -1943,11 +1967,12 @@ function renderMemberModal(memberId) {
               <div class="assignment-group">
                 ${checkboxInput("Marching Band", "marchingBand", member.assignments.marchingBand)}
                 <div class="marching-section-field" ${member.assignments.marchingBand ? "" : `style="display:none"`}>
-                  ${selectInput("Marching Band Section Assignment", "section", bandSections, member.assignments.section)}
+                  ${selectInput("Marching Band Section Assignment", "section", currentBandSections(), member.assignments.section)}
                 </div>
               </div>
               ${checkboxInput("Concert Band", "concertBand", member.assignments.concertBand)}
               ${checkboxInput("Symphonic Band", "symphonicBand", member.assignments.symphonicBand)}
+              ${state.customBandEnsembles.map((ensemble) => checkboxInput(ensemble.title, `customEnsemble:${ensemble.id}`, member.assignments.customEnsembles?.includes(ensemble.id))).join("")}
             </div>
           </details>
           <div class="form-grid">
@@ -1977,6 +2002,7 @@ function textInput(label, name, value, type = "text") {
 }
 
 function selectInput(label, name, options, selected) {
+  options = [...new Set([...options, ...(selected && !options.includes(selected) ? [selected] : [])])];
   return `
     <label class="field">
       <span>${escapeHtml(label)}</span>
@@ -2005,7 +2031,7 @@ function renderAttendancePermissions(member) {
       <div class="grid two">
         <section class="panel tight">
           <h4>Marching Band</h4>
-          ${bandSections.map((section) => permissionRow(section, member.attendancePermissions?.[section])).join("")}
+          ${currentBandSections().map((section) => permissionRow(section, member.attendancePermissions?.[section])).join("")}
         </section>
         <section class="panel tight">
           <h4>Concert Band</h4>
@@ -2047,8 +2073,8 @@ function renderFunctionModal() {
         <label class="field">
           <span>Function Type</span>
           <select name="mandatory">
-            <option value="true">Mandatory</option>
-            <option value="false">Optional</option>
+            <option value="true" ${systemSettings().defaultFunctionMandatory ? "selected" : ""}>Mandatory</option>
+            <option value="false" ${!systemSettings().defaultFunctionMandatory ? "selected" : ""}>Optional</option>
           </select>
         </label>
         <div class="form-actions">
@@ -2095,11 +2121,11 @@ function renderAttendanceEventModal(context) {
           <span>Time</span>
           <input name="time" type="time" value="13:30">
         </label>
-        ${defaultType === "fundraiser" ? `<p class="muted">All fundraisers are mandatory.</p>` : `<label class="field function-type-field">
+        ${defaultType === "fundraiser" ? `<p class="muted">${systemSettings().fundraisersMandatory ? "Fundraisers are mandatory." : "Fundraisers are optional."} Change this in Admin → Settings.</p>` : `<label class="field function-type-field">
           <span>Function Type</span>
           <select name="mandatory">
-            <option value="true">Mandatory</option>
-            <option value="false">Optional</option>
+            <option value="true" ${systemSettings().defaultFunctionMandatory ? "selected" : ""}>Mandatory</option>
+            <option value="false" ${!systemSettings().defaultFunctionMandatory ? "selected" : ""}>Optional</option>
           </select>
         </label>`}
         <div class="form-actions">
@@ -2317,7 +2343,7 @@ function renderEmailModal(alertId) {
 }
 
 function alertMailto(alert) {
-  return `mailto:alphapsi@kkpsi.org?subject=${encodeURIComponent(alert.subject)}&body=${encodeURIComponent(alert.body)}`;
+  return `mailto:${encodeURIComponent(systemSettings().alertEmail)}?subject=${encodeURIComponent(alert.subject)}&body=${encodeURIComponent(alert.body)}`;
 }
 
 function bindAppEvents(member) {
@@ -2352,6 +2378,7 @@ function bindAppEvents(member) {
   bindAdminEvents(member);
   bindModalEvents(member);
   bindFundraiserAttendanceEvents();
+  bindSettingsAndReports(member);
 }
 
 function bindFundraiserAttendanceEvents() {
@@ -2425,6 +2452,7 @@ function bindAttendanceEvents(member) {
 
   document.querySelector("#attendanceForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (!allowedTabs(currentMember()).some((tab) => tab.id === "attendance")) return;
     const form = new FormData(event.currentTarget);
     let record;
     try {
@@ -2462,6 +2490,7 @@ function bindPointEvents(member) {
   updatePointFormFields();
   document.querySelector("#pointForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (!allowedTabs(currentMember()).some((tab) => tab.id === "points")) return;
     const form = new FormData(event.currentTarget);
     const record = createPointRecord(form, member, view.pointMode);
     state.pointRecords.push(record);
@@ -2926,7 +2955,7 @@ function toDatasetKey(attr) {
 
 function addConditionalMemberOverride(previous, next, recordingMember) {
   // This is a single adjustment at a real status transition, never a running floor.
-  if (currentMember()?.role !== "Admin" || previous?.status !== "Active" || next.status !== "Conditional") return null;
+  if (!systemSettings().conditionalCleanStart || currentMember()?.role !== "Admin" || previous?.status !== "Active" || next.status !== "Conditional") return null;
   const date = todayISO();
   const term = getTerm(date);
   const range = getTermDateRange(term);
@@ -2951,7 +2980,7 @@ function addConditionalMemberOverride(previous, next, recordingMember) {
 function memberFromForm(form) {
   const id = String(form.get("memberId") || "") || uid("member");
   const role = String(form.get("role"));
-  const permissions = emptyAttendancePermissions();
+  const permissions = { ...emptyAttendancePermissions(), ...Object.fromEntries(currentBandSections().map((section) => [section, false])) };
   for (const key of Object.keys(permissions)) {
     permissions[key] = form.get(`permission:${key}`) === "true";
   }
@@ -2968,6 +2997,7 @@ function memberFromForm(form) {
       section: String(form.get("section")),
       concertBand: form.get("concertBand") === "on",
       symphonicBand: form.get("symphonicBand") === "on",
+      customEnsembles: state.customBandEnsembles.filter((item) => form.get(`customEnsemble:${item.id}`) === "on").map((item) => item.id),
       committee: String(form.get("committee")),
     },
     attendancePermissions: role === "Brother" ? permissions : emptyAttendancePermissions(),
@@ -3023,7 +3053,10 @@ function updateAttendanceRecordFromForm(form, editingMember) {
     eventKind: String(form.get("eventKind")),
     label: String(form.get("eventLabel") || record.eventLabel).trim() || record.eventLabel,
   };
+  const config = record.eventKind === "fundraiser" ? fundraiserConfiguration(record) : {};
+  Object.assign(event, config);
   const statusesForMembers = attendanceStatusesFromForm(form, event);
+  Object.assign(record, config);
   record.eventLabel = event.label;
   record.date = String(form.get("date") || todayISO());
   record.notes = String(form.get("notes") || "").trim();
@@ -3042,9 +3075,12 @@ function createAttendanceRecord(form, recordingMember) {
     label: String(form.get("eventLabel")),
   };
   const date = String(form.get("date")) || todayISO();
-  const statusesForMembers = attendanceStatusesFromForm(form, event);
   const previous = state.attendanceRecords.find((item) => item.eventId === event.eventId && item.date === date);
+  const config = event.eventKind === "fundraiser" ? fundraiserConfiguration(previous) : {};
+  Object.assign(event, config);
+  const statusesForMembers = attendanceStatusesFromForm(form, event);
   const record = {
+    ...config,
     id: previous?.id || uid("attendance"),
     eventId: event.eventId,
     eventKind: event.eventKind,
@@ -3068,17 +3104,17 @@ function attendanceStatusesFromForm(form, event) {
   }
   const entries = [];
   for (const member of membersForAttendanceEvent(event)) {
-    const shift1 = String(form.get(`shift1:${member.id}`) || "");
-    const shift2 = String(form.get(`shift2:${member.id}`) || "");
-    const extraShifts = Number(form.get(`extraShifts:${member.id}`) || 0);
-    if (![shift1, shift2].every((status) => attendanceStatuses.includes(status))) {
-      throw new Error(`Select Shift 1 and Shift 2 attendance for ${formatMember(member)}.`);
+    const config = { ...fundraiserConfiguration(), ...event };
+    const shifts = Array.from({length: config.requiredShiftCount}, (_, index) => String(form.get(`shift${index + 1}:${member.id}`) || ""));
+    const extraShifts = config.extraShiftsEnabled ? Number(form.get(`extraShifts:${member.id}`) || 0) : 0;
+    if (!shifts.every((status) => attendanceStatuses.includes(status))) {
+      throw new Error(`Select all ${config.requiredShiftCount} shift statuses for ${formatMember(member)}.`);
     }
     if (!Number.isSafeInteger(extraShifts) || extraShifts < 0) {
       throw new Error(`Extra Shifts Worked must be a nonnegative whole number for ${formatMember(member)}.`);
     }
-    const status = [shift1, shift2].includes("Absent") ? "Absent" : [shift1, shift2].includes("Late") ? "Late" : "Present";
-    entries.push({ memberId: member.id, status, shift1, shift2, extraShifts });
+    const status = shifts.includes("Absent") ? "Absent" : shifts.includes("Late") ? "Late" : "Present";
+    entries.push({ memberId: member.id, status, shifts, extraShifts });
   }
   return entries;
 }
@@ -3088,16 +3124,16 @@ function attendancePointImpacts(event, statusesForMembers) {
   for (const entry of statusesForMembers) {
     const member = state.members.find((item) => item.id === entry.memberId);
     if (!member) continue;
-    if (event.eventKind === "fundraiser" && entry.shift1 && entry.shift2) {
-      const shifts = [entry.shift1, entry.shift2].map((status) => pointsForAttendanceStatus(event, member, status));
+    if (event.eventKind === "fundraiser" && fundraiserShiftStatuses(entry).length) {
+      const shifts = fundraiserShiftStatuses(entry).map((status) => pointsForAttendanceStatus(event, member, status));
       const penaltyPoints = shifts.reduce((sum, shift) => sum + shift.points, 0);
-      const bonusPoints = entry.extraShifts * ruleImpact("positive", "multiple-fundraiser-shifts").points;
+      const bonusPoints = (Number(entry.extraShifts) || 0) * ruleImpact("positive", "multiple-fundraiser-shifts").points;
       impacts.push({
         memberId: member.id,
         points: penaltyPoints + bonusPoints,
         penaltyPoints,
         bonusPoints,
-        note: `Shift 1: ${signedPoints(shifts[0].points)}; Shift 2: ${signedPoints(shifts[1].points)}; Extra shifts: ${signedPoints(bonusPoints)}`,
+        note: `${shifts.map((shift,index) => `Shift ${index + 1}: ${signedPoints(shift.points)}`).join("; ")}; Extra shifts: ${signedPoints(bonusPoints)}`,
       });
       continue;
     }
@@ -3114,7 +3150,7 @@ function attendancePointImpacts(event, statusesForMembers) {
 
 function pointsForAttendanceStatus(event, member, status) {
   // Automatic attendance exemptions never alter already-stored records or manual deductions.
-  if ((status === "Absent" || status === "Late") && member.status === "Conditional") {
+  if (member.status === "Conditional" && ((status === "Absent" && systemSettings().conditionalAbsenceExempt) || (status === "Late" && systemSettings().conditionalLateExempt))) {
     return { points: 0, action: `${status === "Absent" ? "Absence" : "Lateness"} exempt for Conditional status` };
   }
   if (status === "Present") {
@@ -3138,7 +3174,7 @@ function pointsForAttendanceStatus(event, member, status) {
   }
 
   if (status === "Absent") {
-    if (event.eventKind === "fundraiser") return ruleImpact("negative", "missed-fundraiser");
+    if (event.eventKind === "fundraiser") return (event.fundraiserMandatory ?? systemSettings().fundraisersMandatory) ? ruleImpact("negative", "missed-fundraiser") : { points: 0, action: "Absent from optional fundraiser" };
     if (event.eventKind === "committee") return conditionalImpact(member, "negative", "absent-committee");
     if (event.eventKind === "band" || event.eventKind === "custom-band") return conditionalImpact(member, "negative", "absent-band");
     if (event.eventKind === "function") {
@@ -3155,9 +3191,7 @@ function pointsForAttendanceStatus(event, member, status) {
 
 function conditionalImpact(member, type, ruleId) {
   const impact = ruleImpact(type, ruleId);
-  if (member.status === "Conditional" && conditionalIgnoredActions.has(impact.action)) {
-    return { points: 0, action: `${impact.action} ignored for Conditional status` };
-  }
+
   return impact;
 }
 
@@ -3198,7 +3232,7 @@ function dispatchPendingEmails() {
 }
 
 function autoDispatchAlertEmail(alert) {
-  if (!alert || alert.emailDispatchedAt) return;
+  if (!systemSettings().emailPromptsEnabled || !alert || alert.emailDispatchedAt) return;
   alert.acknowledged = true;
   alert.emailOpenedAt = new Date().toISOString();
   alert.emailDispatchedAt = alert.emailOpenedAt;
@@ -3228,7 +3262,7 @@ function maybeCreateProbationAlert(memberId) {
   const range = getTermDateRange(term);
   const total = totalPointsForRange(memberId, range.start, range.end);
   const member = state.members.find((item) => item.id === memberId);
-  if (!member || total > -50) return;
+  if (!systemSettings().probationEnabled || !member || total > systemSettings().probationThreshold) return;
   const alreadySent = state.alerts.some(
     (alert) => alert.type === "probation" && alert.memberId === memberId && alert.term === term,
   );
@@ -3254,7 +3288,7 @@ function ensureProbationAlertsForCurrentTerm() {
   const range = getTermDateRange(term);
   for (const member of state.members) {
     const total = totalPointsForRange(member.id, range.start, range.end);
-    if (total <= -50) {
+    if (systemSettings().probationEnabled && total <= systemSettings().probationThreshold) {
       const alert = maybeCreateProbationAlert(member.id);
       if (alert) alerts.push(alert);
     }
