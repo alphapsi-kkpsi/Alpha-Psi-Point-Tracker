@@ -633,7 +633,7 @@ function renderContent(member) {
 }
 
 function renderTracker(member) {
-  if (view.fullReport) return renderChapterGoals() + renderFullRecordReport(member);
+  if (view.fullReport) return renderFullRecordReport(member);
   const path = view.trackerPath;
   const title = path.length ? path[path.length - 1].label : "Point Tracker";
   return `
