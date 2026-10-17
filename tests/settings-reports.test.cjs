@@ -81,3 +81,18 @@ assert.throws(()=>run(`createPointRecords(new FormData(),currentMember(),'positi
 run(`bulk.append('memberId','missing')`);
 assert.throws(()=>run(`createPointRecords(bulk,currentMember(),'negative')`),/no longer available/);
 console.log('Multi-member point record tests passed.');
+// Help always exists, but procedures reflect the signed-in role.
+for (const role of ['Brother','Executive Member','Admin']) {
+  run(`var helpMember={...state.members[1],role:'${role}'};var topics=helpSections(helpMember);`);
+  assert.equal(run(`allowedTabs(helpMember).some(t=>t.id==='help')`),true);
+  assert.equal(run(`topics.some(t=>t.group==='Brother functions')`),true);
+  assert.equal(run(`topics.some(t=>t.group==='Executive functions')`),role!=='Brother');
+  assert.equal(run(`topics.some(t=>t.group==='Admin functions')`),role==='Admin');
+  assert.equal(run(`topics.every(t=>t.steps.length>=3&&t.picture.length===3)`),true);
+  assert.equal(run(`renderHelp(helpMember).includes('data-help-search')`),true);
+  assert.equal(run(`renderHelp(helpMember).includes('<svg')`),true);
+}
+assert.equal(run(`helpIllustration('<script>', ['a&b']).includes('&lt;script&gt;')`),true);
+run(`var helpSnapshot=JSON.stringify(state);renderHelp(currentMember());`);
+assert.equal(run(`JSON.stringify(state)===helpSnapshot`),true);
+console.log('Role-specific Help tests passed.');
