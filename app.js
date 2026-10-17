@@ -1404,11 +1404,11 @@ function renderAdmin(member) {
       </div>
     </div>
     <div class="admin-tabs">
-      <button class="${view.adminSection === "settings" ? "active" : ""}" data-admin-section="settings">Settings</button>
       <button class="${view.adminSection === "attendance" ? "active" : ""}" data-admin-section="attendance">Attendance Events</button>
       <button class="${view.adminSection === "points" ? "active" : ""}" data-admin-section="points">Point Assignments</button>
       <button class="${view.adminSection === "records" ? "active" : ""}" data-admin-section="records">Records</button>
       <button class="${view.adminSection === "members" ? "active" : ""}" data-admin-section="members">Member Info & Permissions</button>
+      <button class="${view.adminSection === "settings" ? "active" : ""}" data-admin-section="settings">Settings</button>
     </div>
     ${renderAdminSection(member)}
   `;
