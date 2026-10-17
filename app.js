@@ -468,6 +468,7 @@ function allowedTabs(member) {
   if (member.role === "Admin") {
     tabs.push({ id: "admin", label: "Admin" });
   }
+  tabs.push({ id: "help", label: "Help" });
   return tabs;
 }
 
@@ -627,6 +628,7 @@ function renderContent(member) {
   if (view.tab === "attendance") return renderAttendance(member);
   if (view.tab === "points") return renderSubmitPoints(member);
   if (view.tab === "admin") return renderAdmin(member);
+  if (view.tab === "help") return renderHelp(member);
   return "";
 }
 
@@ -2378,6 +2380,7 @@ function bindAppEvents(member) {
   bindModalEvents(member);
   bindFundraiserAttendanceEvents();
   bindSettingsAndReports(member);
+  bindHelpEvents();
 }
 
 function bindFundraiserAttendanceEvents() {
@@ -3318,3 +3321,152 @@ document.addEventListener("DOMContentLoaded", () => {
   dispatchPendingEmails();
   render();
 });
+
+// Role-specific SOP. Illustrations are examples, never live chapter records.
+function helpIllustration(title, rows) {
+  return `<figure class="help-figure"><svg viewBox="0 0 600 ${92 + rows.length * 44}" role="img" aria-label="${escapeHtml(title + ': ' + rows.join('; '))}">
+    <rect width="600" height="${92 + rows.length * 44}" rx="16" fill="#f4f6fa"/>
+    <rect width="600" height="48" rx="16" fill="#173b63"/>
+    <text x="22" y="31" fill="white" font-size="18" font-family="Arial">${escapeHtml(title)}</text>
+    ${rows.map((row, i) => `<circle cx="30" cy="${77 + i * 44}" r="13" fill="#173b63"/><text x="30" y="${82 + i * 44}" text-anchor="middle" fill="white" font-size="14" font-family="Arial">${i + 1}</text><text x="56" y="${83 + i * 44}" fill="#172d46" font-size="16" font-family="Arial">${escapeHtml(row)}</text>`).join('')}
+    </svg><figcaption>Illustrated example • Follow the numbered steps below.</figcaption></figure>`;
+}
+
+function helpSections(member) {
+  const sections = [];
+  const add = (id, group, title, route, picture, steps, note) => sections.push({id, group, title, route, picture, steps, note});
+  add('start', 'Brother functions', 'Sign in and find your tools', 'Sign in → Point Tracker', ['School email + Buff ID', 'Point Tracker | Help', 'More tabs appear with your permissions'], [
+    'Enter the school email and Buff ID recorded in your member profile. Use the remember option only on a device you trust.',
+    'After signing in, the tracker opens the current week. Use the bottom navigation to switch tools. Help is available to every member.',
+    'If your login fails or an expected tab is missing, ask an Admin to check your profile, permissions, and chapter settings. Use Log Out when finished on a shared device.'
+  ], 'This guide shows the functions available to your role. Chapter settings can hide or disable specific tools.');
+  add('personal', 'Brother functions', 'Read your points and weekly records', 'Point Tracker → Academic year → Semester → Week', ['Personal Points: term total', 'Chapter Points: combined term total', 'Weekly log: attendance and manual points'], [
+    'Use Back to move from a week to its semester or academic year; choose a period to open it.',
+    'In a weekly view, read the point totals above the log. Personal Points is your semester total, and Chapter Points combines the chapter’s semester points. The log below shows the selected week.',
+    'Review each record’s date, action, points, notes, and recording member. Ask an Admin to correct an inaccurate record; explain the event, date, and requested correction.'
+  ], 'Changing the displayed week does not turn the semester total into a weekly total.');
+  add('history', 'Brother functions', 'Open your Full Record Report', 'Point Tracker → Full Record Report', ['Full Record Report', 'Academic year | Semester | Sort', 'Attendance + manual point history'], [
+    'Select Full Record Report from Point Tracker to open your recorded history.',
+    'Filter by academic year and semester. Choose newest-to-oldest or oldest-to-newest to change the order.',
+    'Clear the period filters to see all available history. Use Back to Point Tracker to return.'
+  ], 'Brothers see their own history. Executive Members and Admins can inspect member histories.');
+  add('attendance', 'Brother functions', 'How to Submit Attendance — Brother View', 'Submit Attendance → Category → Event → Date', ['Choose the event and correct date', 'Each member: Present | Absent | Late', 'Notes → Submit attendance'], [
+    'If Submit Attendance is available, open it and select the permitted ensemble or section. Brothers only receive attendance access assigned by an Admin.',
+    'Choose the event and verify its date and displayed roster. If the roster is wrong, ask an Admin to fix assignments before submitting.',
+    'Mark Present, Absent, or Late for each member you are recording. Add useful notes, then use the form’s submit button.',
+    'Review Submitted Record and the recording-member notice. If attendance has already been submitted, a Brother cannot overwrite it; request an Admin correction.'
+  ], hasAttendancePermission(member) || member.role !== 'Brother' ? 'Attendance permissions depend on the member profile and chapter settings.' : 'You currently have no Brother attendance permissions. This procedure is available if an Admin assigns them.');
+  if (canViewAllPoints(member)) {
+    add('chapter', 'Executive functions', 'Review chapter points and member history', 'Point Tracker → Week → Member → Full Record Report', ['Chapter roster → select a member', 'Member term total + weekly records', 'Full Record Report → filter history'], [
+      'Open the desired semester and week in Point Tracker to see the chapter roster and term totals.',
+      'Select a member’s name to inspect that member’s weekly records. Use All Members to return to the roster.',
+      'Select Full Record Report for that member to review all recorded history. Verify the member name before interpreting totals or filters.'
+    ], 'Executive access includes all Brother help sections. Record corrections and member administration require Admin access.');
+    add('exec-attendance', 'Executive functions', 'Submit chapter attendance', 'Submit Attendance → Category → Event', ['Ensembles | Business | Committees', 'Functions | Fundraisers', 'Verify date and roster → submit'], [
+      'Open Submit Attendance and choose the relevant category, event, and date. Executive attendance access must be enabled in chapter settings.',
+      'Verify the roster, then record each member’s status and any notes. Band and committee rosters depend on assignments; function, business, and fundraiser rosters include chapter members.',
+      'Submit and review the saved summary. An existing submission is locked for Executive Members; send corrections to an Admin.'
+    ], systemSettings().executiveAttendance ? 'Only available categories appear. Follow the fundraiser procedure for shift-based events.' : 'Executive attendance submissions are currently disabled in Settings. Admins retain attendance access.');
+    add('fundraiser', 'Executive functions', 'Record fundraiser shifts and extra work', 'Submit Attendance → Fundraisers → Event', ['Shift 1: Present | Absent | Late', 'Repeat for every required shift', 'Extra Shifts Worked → submit'], [
+      'Choose the fundraiser and check the date. Read the displayed required shift count; a previously saved event retains its recorded shift configuration.',
+      'Set Present, Absent, or Late for every required shift for every listed member.',
+      'If extra-shift bonuses are enabled, enter only the additional shifts under Extra Shifts Worked. Use More… for a count beyond the listed choices.',
+      'Submit and review the points in Submitted Record. Required shifts and extra shifts are separate; do not count a required shift again as an extra.'
+    ], `Current new-record policy: ${systemSettings().requiredFundraiserShifts} required shifts; fundraisers ${systemSettings().fundraisersMandatory ? 'mandatory' : 'optional'}. Optional fundraisers waive absence deductions; late rules still apply. Conditional attendance exemptions may also apply.`);
+    add('points', 'Executive functions', 'Give positive or negative points to multiple members', 'Submit Points → Positive or Negative Point Record', ['Select one or more member checkboxes', 'Action + notes apply to every selection', 'Submit → separate member records'], [
+      'Open Submit Points, then choose Create Positive Point Record or Create Negative Point Record.',
+      'Check every intended member. Select at least one. Each selected member receives the same action, amount, and notes; use separate submissions when these differ.',
+      'Choose the action. For Working Multiple Fundraiser Shifts, enter the extra-shift count. Admins can enter a Discretion Point Amount when that field appears.',
+      'Add notes explaining the award or deduction. Recheck the selected members and action, then Submit once.',
+      'Open member records to verify the result. The app saves separate records for each member; ask an Admin to correct mistakes instead of submitting another copy.'
+    ], systemSettings().executivePoints ? 'Manual point deductions remain separate from automatic attendance exemptions. Alert emails open in your email app when enabled; review and send them there.' : 'Executive manual point submissions are currently disabled in Settings. Admins retain submission access.');
+  }
+  if (member.role === 'Admin') {
+    add('members', 'Admin functions', 'Add members, manage roles, and assign attendance access', 'Admin → Member Info & Permissions', ['Add member or edit an existing profile', 'Identity → Role → Assignments', 'Brother attendance permissions → Save'], [
+      'Open Member Info & Permissions. Use the add-member control for a new profile or open an existing member to edit.',
+      'Enter the member’s first and last name, school email, and Buff ID carefully. These identity fields support sign-in.',
+      'Choose Admin, Executive Member, or Brother. Assign the member’s marching section, ensembles, and committee so attendance rosters are accurate.',
+      'For Brothers who record attendance, enable only the appropriate ensemble or section permissions. Save and verify the resulting profile.',
+      'Use member deletion only when removal is intended: it also removes that member’s point records and entries in attendance records. Archiving an ensemble or committee in Settings is a different operation.'
+    ], 'Admins have chapter administration access. Executive Members have chapter reporting and the submission access enabled in Settings. Brothers have personal reporting and individually assigned attendance access.');
+    add('conditional', 'Admin functions', 'Change a Brother to Conditional', 'Admin → Member Info & Permissions → Member', ['Brother status: Active → Conditional', 'Save → one-time override if eligible', 'Review member Full Record Report'], [
+      'Edit the Brother and change status from Active to Conditional. Save the profile.',
+      'If clean start is enabled and the current-semester balance is negative, saving the status transition adds a Conditional Member Override that brings that balance to zero.',
+      'Review the override in the member’s history. A positive balance is retained. Later manual deductions can lower the total again.',
+      'Configure absence and late attendance exemptions separately under Settings. These affect attendance scoring; they do not rewrite stored records.'
+    ], 'The clean start is a one-time status-transition adjustment, not a permanent minimum balance. Probation alerts do not automatically change member status.');
+    add('events', 'Admin functions', 'Create events and maintain meeting schedules', 'Admin → Attendance Events', ['Choose a category → Add event', 'Type, title, date, and applicable time', 'Check assignments before attendance'], [
+      'Open Attendance Events and the relevant category. Use the add control to create an ensemble, committee, business meeting, function, or fundraiser.',
+      'Enter the title and the fields shown for that type. Choose mandatory or optional for a Function; fundraiser policy is configured in Settings.',
+      'Use committee meeting settings to adjust that committee’s day and time. Chapter-wide business meeting recurrence is configured in Settings; additional business meetings can be added separately.',
+      'Verify new ensembles and committees under Settings and update member assignments. Custom ensembles can use all members or assigned members only.',
+      'Use Submit Attendance to record attendance. The Attendance Events screen manages the catalog and schedule; reviewing an event there does not submit attendance.'
+    ], 'Deleting an event or date is different from correcting a saved attendance record. Review history under Records before making changes.');
+    add('corrections', 'Admin functions', 'Correct records and approve attendance letters', 'Admin → Records → Academic year → Semester → Week', ['Find record → Edit', 'Attendance deduction → Approved Letter', 'Verify member history after saving'], [
+      'Open Records and navigate to the period containing the record. Inspect its type, date, and member or event before choosing Edit.',
+      'For a manual point record, correct the member, date, action name, signed point amount, or notes, then save.',
+      'For attendance, correct the relevant statuses, shifts, date, or notes and save. Review the recalculated points.',
+      'For an eligible attendance deduction, check Approved Letter on that member’s attendance entry. The log shows Approved Letter Override in green and removes the deduction from the effective total. Uncheck to remove the approval.',
+      'Verify the affected member’s Full Record Report. Delete a record only when it should be removed entirely; use editing for corrections.'
+    ], 'An attendance record can contain many members. Deleting it removes the entire submission. Approved Letter applies to attendance deductions, not manual point records.');
+    add('pdf', 'Admin functions', 'Download records as a PDF', 'Admin → Records → Download Records', ['Choose academic year, semester, or week', 'Download Records for that period', 'Open PDF and check date range'], [
+      'Open Records and locate the academic year, semester, or week you need.',
+      'Use Download Records beneath the intended period. The selected period determines the report’s coverage.',
+      'Wait for the PDF to download. Open it and verify the heading and period before sharing. It groups records by member and separates attendance from manual points.',
+      'If generation fails, read the on-screen error and retry. Keep the tracker open until the download finishes.'
+    ], 'These reports contain chapter member records. Share them only with the appropriate chapter audience.');
+    add('rules', 'Admin functions', 'Maintain point rules', 'Admin → Point Assignments', ['Choose positive or negative rules', 'Edit name and signed point value', 'Save → check Submit Points'], [
+      'Open Point Assignments and choose the positive or negative rule editor.',
+      'Review existing action names and point amounts. Add a custom action when a distinct chapter rule is needed. Discretion amounts are entered per submission.',
+      'Save the editor and verify the choices under Submit Points. Settings also provides point-rule editing.',
+      'Rule changes apply when future records are created or attendance is recalculated during an edit. Stored manual point records retain their recorded amounts.'
+    ], 'For fundraiser rules, the late and absence values apply per required shift, and the extra-shift value applies per extra shift.');
+    add('settings', 'Admin functions', 'Configure the tracker for future executive teams', 'Admin → Settings (after Member Info & Permissions)', ['Chapter & calendar | Fundraiser attendance', 'Conditional members | Access & visibility', 'Ensembles | Committees | Point rules'], [
+      'Open Settings and expand the relevant section. Read the field guidance before changing a value.',
+      'Chapter & calendar controls the chapter name, alert email, semester boundary, week start, and recurring business meeting schedule.',
+      'Fundraiser attendance controls required shifts, mandatory status, and extra-shift bonuses. Conditional members & probation controls exemptions, clean start, the probation threshold, and email prompts.',
+      'Access & event visibility controls Executive submissions, default mandatory Functions, and visible attendance categories.',
+      'Maintain ensembles, marching sections, and committees. Add or rename custom entries, choose custom ensemble roster behavior, and uncheck Available to archive entries while retaining history.',
+      'Review point values and custom rules, then select Save Settings. Resolve validation messages before leaving. Reopen the relevant tool to verify the result.'
+    ], 'Settings affect the whole chapter. Previously stored point amounts are preserved; existing fundraiser attendance retains its saved shift configuration. Archived catalogs may still appear in historical reports.');
+  }
+  add('troubleshooting', 'Troubleshooting', 'Missing tools, wrong totals, and submission problems', 'Help → Troubleshooting', ['Missing tab → permissions and Settings', 'Wrong roster → member assignments', 'Wrong points → period, record, and rule'], [
+    'Missing tab or event: ask an Admin to check your role, attendance permissions, available ensembles or committees, and event visibility settings.',
+    'Wrong total: check the semester and member, then inspect Full Record Report for duplicate manual submissions, attendance deductions, letter approvals, or status-transition overrides.',
+    'Locked attendance: an existing submission can be edited by an Admin. Do not create another event to work around the lock.',
+    'No records: try a different week or clear report filters. A period with no records can legitimately be empty.',
+    'After submitting, verify that your record appears. If it is missing after a connection issue, refresh and check history before retrying to avoid duplicates.',
+    'For help, give an Admin the event, date, member, action, and exact error. Avoid including Buff IDs or other sign-in details in screenshots.'
+  ], 'Illustrations in this guide are examples. The actual roster, labels, and available tools follow current chapter configuration.');
+  return sections;
+}
+
+function renderHelp(member) {
+  const sections = helpSections(member);
+  const groups = [...new Set(sections.map(section => section.group))];
+  return `<section class="help-page"><style>
+    .help-page{max-width:1000px;margin:auto}.help-page .help-search{margin:20px 0}.help-page .help-toc{display:flex;flex-wrap:wrap;gap:10px;margin:16px 0 24px}.help-page .help-toc a{color:inherit;padding:9px 13px;border:1px solid var(--line);border-radius:12px}.help-page details{margin:14px 0;scroll-margin-top:20px}.help-page summary{font-weight:700;font-size:18px;cursor:pointer;line-height:1.5}.help-page ol{padding-left:24px}.help-page li{margin:12px 0;line-height:1.65}.help-page .help-route{font-weight:600;line-height:1.6}.help-page .help-figure{margin:20px 0;max-width:620px}.help-page svg{width:100%;height:auto;display:block}.help-page figcaption{font-size:12px;margin-top:8px;color:var(--muted)}.help-page [hidden]{display:none!important}.help-page .help-group{margin-top:28px}
+    </style><div class="section-head"><div><h1>Help & Procedures</h1><p>${escapeHtml(member.role)} guide • Illustrated, step-by-step instructions</p></div></div>
+    <p>Find a task below. ${member.role === 'Admin' ? 'Your guide includes Brother, Executive, and Admin procedures.' : member.role === 'Executive Member' ? 'Your guide includes Brother and Executive procedures.' : 'Your guide covers personal records and permitted attendance tasks.'} Open a section to view its picture and instructions.</p>
+    <label class="field help-search"><span>Search help</span><input type="search" data-help-search placeholder="Try attendance, fundraiser, or history" aria-describedby="help-search-count"></label>
+    <p class="muted" id="help-search-count" role="status">${sections.length} procedures</p>
+    <nav class="help-toc" aria-label="Help topics">${groups.map((group,i)=>`<a href="#help-group-${i}">${escapeHtml(group)}</a>`).join('')}</nav>
+    ${groups.map((group,i)=>`<section class="help-group" id="help-group-${i}" data-help-group><h2>${escapeHtml(group)}</h2>${sections.filter(section=>section.group===group).map(section=>`<details class="panel" data-help-section ${section.id==='start'?'open':''}><summary>${escapeHtml(section.title)}</summary><p class="help-route">${escapeHtml(section.route)}</p>${helpIllustration(section.title,section.picture)}<ol>${section.steps.map(step=>`<li>${escapeHtml(step)}</li>`).join('')}</ol><p class="notice">${escapeHtml(section.note)}</p></details>`).join('')}</section>`).join('')}
+    <p data-help-empty hidden>No matching procedures. Try another word or clear the search.</p></section>`;
+}
+
+function bindHelpEvents() {
+  document.querySelector('[data-help-search]')?.addEventListener('input', (event) => {
+    const words = event.target.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    let count = 0;
+    document.querySelectorAll('[data-help-section]').forEach(section => {
+      const match = words.every(word => section.textContent.toLowerCase().includes(word));
+      section.hidden = !match;
+      if (match) count++;
+      if (words.length && match) section.open = true;
+    });
+    document.querySelectorAll('[data-help-group]').forEach(group => { group.hidden = ![...group.querySelectorAll('[data-help-section]')].some(section => !section.hidden); });
+    document.querySelector('#help-search-count').textContent = `${count} ${count === 1 ? 'procedure' : 'procedures'}`;
+    document.querySelector('[data-help-empty]').hidden = count !== 0;
+  });
+}
