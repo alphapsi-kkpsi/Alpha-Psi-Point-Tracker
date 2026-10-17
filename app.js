@@ -3457,13 +3457,21 @@ function renderHelp(member) {
     </style><div class="section-head"><div><h1>Help & Procedures</h1><p>${escapeHtml(member.role)} guide • Illustrated, step-by-step instructions</p></div></div>
     <p>Find a task below. ${member.role === 'Admin' ? 'Your guide includes Brother, Executive, and Admin procedures.' : member.role === 'Executive Member' ? 'Your guide includes Brother and Executive procedures.' : 'Your guide covers personal records and permitted attendance tasks.'} Open a section to view its picture and instructions.</p>
     <label class="field help-search"><span>Search help</span><input type="search" data-help-search placeholder="Try attendance, fundraiser, or history" aria-describedby="help-search-count"></label>
-    <p class="muted" id="help-search-count" role="status">${sections.length} procedures</p>
-    <nav class="help-toc" aria-label="Help topics">${groups.map((group,i)=>`<a href="#help-group-${i}">${escapeHtml(group)}</a>`).join('')}</nav>
+    <p class="muted" id="help-search-count" role="status">${sections.length + 1} sections</p>
+    <div class="toolbar" role="group" aria-label="Help section controls"><button type="button" class="secondary small-action" data-help-expand-all>Expand All</button><button type="button" class="secondary small-action" data-help-collapse-all>Collapse All</button></div>
+    <nav class="help-toc" aria-label="Help topics"><a href="#help-points">Point Assignments</a>${groups.map((group,i)=>`<a href="#help-group-${i}">${escapeHtml(group)}</a>`).join('')}</nav>
+    <section class="help-group" id="help-points" data-help-group><h2>Point Assignments</h2><details class="panel" data-help-section><summary>All point assignments — current chapter rules</summary>${renderHelpPointAssignments()}</details></section>
     ${groups.map((group,i)=>`<section class="help-group" id="help-group-${i}" data-help-group><h2>${escapeHtml(group)}</h2>${sections.filter(section=>section.group===group).map(section=>`<details class="panel" data-help-section ${section.id==='start'?'open':''}><summary>${escapeHtml(section.title)}</summary><p class="help-route">${escapeHtml(section.route)}</p>${helpIllustration(section.title,section.picture)}<ol>${section.steps.map(step=>`<li>${escapeHtml(step)}</li>`).join('')}</ol><p class="notice">${escapeHtml(section.note)}</p></details>`).join('')}</section>`).join('')}
     <p data-help-empty hidden>No matching procedures. Try another word or clear the search.</p></section>`;
 }
 
 function bindHelpEvents() {
+  document.querySelector('[data-help-expand-all]')?.addEventListener('click', () => {
+    document.querySelectorAll('.help-page [data-help-section]').forEach(section => { if (!section.hidden) section.open = true; });
+  });
+  document.querySelector('[data-help-collapse-all]')?.addEventListener('click', () => {
+    document.querySelectorAll('.help-page [data-help-section]').forEach(section => { section.open = false; });
+  });
   document.querySelector('[data-help-search]')?.addEventListener('input', (event) => {
     const words = event.target.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
     let count = 0;
@@ -3474,7 +3482,16 @@ function bindHelpEvents() {
       if (words.length && match) section.open = true;
     });
     document.querySelectorAll('[data-help-group]').forEach(group => { group.hidden = ![...group.querySelectorAll('[data-help-section]')].some(section => !section.hidden); });
-    document.querySelector('#help-search-count').textContent = `${count} ${count === 1 ? 'procedure' : 'procedures'}`;
+    document.querySelector('#help-search-count').textContent = `${count} ${count === 1 ? 'section' : 'sections'}`;
     document.querySelector('[data-help-empty]').hidden = count !== 0;
   });
+}
+
+function renderHelpPointAssignments() {
+  return `<p class="muted">These are the current point assignments saved by an Admin. Historical records keep their recorded values.</p>
+    ${['positive', 'negative'].map(type => `<h3>${type === 'positive' ? 'Positive point awards' : 'Negative point deductions'}</h3>
+      <div class="table-wrap"><table><caption>${type === 'positive' ? 'Positive' : 'Negative'} point assignments</caption><thead><tr><th scope="col">Action</th><th scope="col">Points</th><th scope="col">How applied</th></tr></thead><tbody>
+      ${state.pointRules[type].map(rule => `<tr><th scope="row">${escapeHtml(rule.name)}</th><td class="${pointClass(rule.value)}">${rule.value === null ? 'Custom amount' : escapeHtml(signedPoints(rule.value))}</td><td>${rule.value === null ? 'Entered per submission; Admin discretion amount.' : rule.id === 'multiple-fundraiser-shifts' ? 'Per extra fundraiser shift.' : ['late-fundraiser', 'missed-fundraiser'].includes(rule.id) ? 'Per required fundraiser shift.' : 'Per applicable record.'}</td></tr>`).join('') || '<tr><td colspan="3">No assignments configured.</td></tr>'}
+      </tbody></table></div>`).join('')}
+    <p class="notice">Automatic attendance points also follow chapter settings: optional fundraiser absences may have no deduction, Conditional members may have attendance exemptions, and approved attendance letters can remove eligible deductions. Present attendance can be worth zero where no award applies. Extra shifts multiply the configured bonus. Manual deductions remain separate from attendance exemptions.</p>`;
 }
