@@ -96,3 +96,41 @@ assert.equal(run(`helpIllustration('<script>', ['a&b']).includes('&lt;script&gt;
 run(`var helpSnapshot=JSON.stringify(state);renderHelp(currentMember());`);
 assert.equal(run(`JSON.stringify(state)===helpSnapshot`),true);
 console.log('Role-specific Help tests passed.');
+// Chapter goals validate atomically and count net chapter points within their own dates.
+run(`state.pointRecords=[{id:'g1',memberId:'admin',date:'2026-10-01',points:80},{id:'g2',memberId:'brother',date:'2026-10-02',points:-10},{id:'old',memberId:'admin',date:'2026-09-30',points:999},{id:'future',memberId:'admin',date:'2026-10-20',points:999}];state.attendanceRecords=[];
+function goalForm(){const f=settingsForm();f.append('chapterGoalId','goal-test');f.set('goalName:goal-test','Pizza');f.set('goalTarget:goal-test','100');f.set('goalReward:goal-test','Chapter pizza night');f.set('goalStart:goal-test','2026-10-01');f.set('goalEnd:goal-test','2026-10-31');f.set('goalVisible:goal-test','on');return f;}
+var gf=goalForm();saveSystemSettings(gf);var goal=systemSettings().chapterGoals[0];`);
+assert.equal(run('chapterGoalProgress(goal).points'),70);
+assert.equal(run('chapterGoalProgress(goal).remaining'),30);
+assert.equal(run('chapterGoalProgress(goal).percent'),70);
+run(`state.pointRecords.push({id:'reach',memberId:'brother',date:'2026-10-08',points:30})`);
+assert.equal(run('chapterGoalProgress(goal).status'),'Goal reached');
+run(`state.pointRecords.push({id:'deduct',memberId:'brother',date:'2026-10-08',points:-150})`);
+assert.equal(run('chapterGoalProgress(goal).points'),-50);
+assert.equal(run('chapterGoalProgress(goal).percent'),0);
+assert.equal(run('chapterGoalProgress(goal).remaining'),150);
+assert.equal(run(`chapterGoalProgress({...goal,start:'2026-11-01',end:'2026-11-30'}).status`),'Upcoming');
+assert.equal(run(`chapterGoalProgress({...goal,end:'2026-10-02'}).status`),'Ended');
+assert.equal(run(`chapterGoalProgress({...goal,end:'2026-10-02',target:50}).status`),'Completed');
+run(`var beforeGoal=JSON.stringify(state);gf.set('goalTarget:goal-test','0')`);
+assert.throws(()=>run('saveSystemSettings(gf)'),/whole numbers/);
+assert.equal(run('JSON.stringify(state)===beforeGoal'),true);
+run(`gf=goalForm();gf.set('goalStart:goal-test','2026-11-01')`);
+assert.throws(()=>run('saveSystemSettings(gf)'),/dates/);
+run(`gf=goalForm();gf.set('goalEnd:goal-test','2026-02-30')`);
+assert.throws(()=>run('saveSystemSettings(gf)'),/dates/);
+run(`gf=goalForm();gf.set('goalReward:goal-test','')`);
+assert.throws(()=>run('saveSystemSettings(gf)'),/reward/);
+for(const role of ['Brother','Executive Member','Admin']) {
+  run(`state.members[1].role='${role}';session={memberId:'brother'};view.fullReport=null;view.trackerPath=[];`);
+  assert.equal(run(`renderTracker(currentMember()).includes('Chapter pizza night')`),true);
+}
+run(`session={memberId:'admin'};state.settings.chapterGoals[0].reward='<script>alert(1)</script>'`);
+assert.equal(run(`renderChapterGoals().includes('&lt;script&gt;')`),true);
+run(`state.settings.chapterGoals[0].visible=false`);
+assert.equal(run('renderChapterGoals()'),'');
+run(`state.settings.chapterGoals=[]`);
+assert.equal(run('renderChapterGoals()'),'');
+run(`session={memberId:'brother'};state.members[1].role='Brother'`);
+assert.throws(()=>run('saveSystemSettings(goalForm())'),/Only Admins/);
+console.log('Chapter goal tests passed.');
