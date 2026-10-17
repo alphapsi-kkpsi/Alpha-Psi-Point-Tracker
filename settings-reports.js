@@ -1,6 +1,7 @@
 // Settings and reports share the app's persisted chapter state. No credentials are exported.
 function defaultSystemSettings() {
   return {
+    chapterGoals: [],
     version: 1, chapterName: "Alpha Psi Point Tracker", alertEmail: "alphapsi@kkpsi.org",
     requiredFundraiserShifts: 2, fundraisersMandatory: true, extraShiftsEnabled: true,
     conditionalAbsenceExempt: true, conditionalLateExempt: true, conditionalCleanStart: true,
@@ -41,6 +42,7 @@ function renderSystemSettings() {
     <div class="notice">Saved point records keep their original values. Rule changes apply to new attendance and new point submissions. Editing attendance recalculates it using current point values. Existing fundraiser records keep their saved shift requirements. Calendar changes regroup the same records; they do not delete them.</div>
     ${view.settingsMessage ? `<p class="notice" role="status">${escapeHtml(view.settingsMessage)}</p>` : ""}
     <form id="systemSettingsForm" class="stack">
+      ${chapterGoalsSettings()}
       <details class="panel" open><summary>Chapter & calendar</summary><div class="settings-fields">
         <label class="field"><span>Chapter / tracker name</span><input name="chapterName" maxlength="100" value="${escapeHtml(s.chapterName)}" required></label>
         <label class="field"><span>Alert email address</span><input name="alertEmail" type="email" value="${escapeHtml(s.alertEmail)}" required><small>Used for the app's prefilled alert emails.</small></label>
@@ -91,6 +93,7 @@ function renderSystemSettings() {
 function parseSettingsForm(form) {
   const previous = systemSettings();
   const next = {...previous};
+  next.chapterGoals = parseChapterGoals(form);
   const text = name => String(form.get(name)||'').trim();
   const names = name => text(name).split('\n').map(value=>value.trim()).filter(Boolean);
   const integer = (name,min,max) => { const value=Number(form.get(name)); if(!Number.isInteger(value)||value<min||value>max) throw new Error(`Check ${name}: use a whole number from ${min} to ${max}.`); return value; };
@@ -177,6 +180,7 @@ function periodDownloadButton(period) {
   return `<button class="secondary small-action period-download" data-download-period="${escapeHtml(JSON.stringify(period))}">Download Records</button>`;
 }
 function bindSettingsAndReports(member) {
+  bindChapterGoalSettings();
   document.querySelector('#systemSettingsForm')?.addEventListener('submit',event=>{event.preventDefault();try{saveSystemSettings(new FormData(event.currentTarget));render();}catch(error){const notice=event.currentTarget.querySelector('[data-settings-error]');notice.textContent=error.message;notice.hidden=false;notice.scrollIntoView({block:'center'});}});
   document.querySelectorAll('[data-full-report]').forEach(button=>button.addEventListener('click',()=>{
     const id=canViewAllPoints(member)?(button.dataset.fullReport||view.trackerMemberId||member.id):member.id;
@@ -266,4 +270,70 @@ async function createPeriodRecordsPdf(period) {
     const stamp=`Generated ${todayISO()}`;p.drawText(stamp,{x:width-margin-font.widthOfTextAtSize(stamp,8),y:24,size:8,font,color:gray});
   });
   return pdf.save();
+}
+
+function chapterGoalFields(goal) {
+  const id = escapeHtml(goal.id);
+  return `<fieldset class="panel stack" data-chapter-goal-row><legend>Chapter goal</legend>
+    <input type="hidden" name="chapterGoalId" value="${id}">
+    <label class="field"><span>Goal name</span><input name="goalName:${id}" value="${escapeHtml(goal.name || '')}" maxlength="100" required placeholder="Semester celebration"></label>
+    <label class="field"><span>Chapter point target</span><input name="goalTarget:${id}" type="number" min="1" max="1000000000" step="1" value="${escapeHtml(goal.target || '')}" required></label>
+    <label class="field"><span>Reward</span><textarea name="goalReward:${id}" maxlength="500" required placeholder="Describe what the chapter earns">${escapeHtml(goal.reward || '')}</textarea></label>
+    <div class="settings-fields"><label class="field"><span>Points count from</span><input name="goalStart:${id}" type="date" value="${escapeHtml(goal.start || '')}" required></label>
+    <label class="field"><span>Through (inclusive)</span><input name="goalEnd:${id}" type="date" value="${escapeHtml(goal.end || '')}" required></label></div>
+    ${settingsCheck(`goalVisible:${id}`, 'Show on Point Tracker', goal.visible !== false, 'Uncheck to hide this goal while keeping its configuration.')}
+    <button type="button" class="danger small-action" data-remove-chapter-goal>Remove goal</button>
+    </fieldset>`;
+}
+function chapterGoalsSettings() {
+  return `<details class="panel"><summary>Chapter goals & rewards</summary><p class="muted">Set chapter-wide point targets and describe the reward. Progress counts net chapter points, including deductions and attendance overrides, within each goal’s dates. It is independent of the week or member currently viewed. Changes are applied with Save Settings.</p>
+    <div data-chapter-goals>${(systemSettings().chapterGoals || []).map(chapterGoalFields).join('')}</div>
+    <button type="button" class="secondary small-action" data-add-chapter-goal>Add chapter goal</button>
+    <p class="muted">Goals are tracking tools. The chapter arranges rewards after reaching a target. A correction or deduction can bring progress below the target again.</p></details>`;
+}
+function parseChapterGoals(form) {
+  const ids = form.getAll('chapterGoalId').map(String);
+  if(new Set(ids).size !== ids.length || ids.some(id=>!/^goal-[a-zA-Z0-9-]+$/.test(id)))throw new Error('Invalid chapter goal. Remove it and add it again.');
+  return ids.map(id=>{
+    const field = name=>String(form.get(`${name}:${id}`)||'').trim();
+    const name=field('goalName'),reward=field('goalReward'),target=Number(field('goalTarget')),start=field('goalStart'),end=field('goalEnd');
+    const validDate = date=>/^\d{4}-\d{2}-\d{2}$/.test(date) && Number(date.slice(0,4))>=1000 && !Number.isNaN(Date.parse(date)) && new Date(date).toISOString().slice(0,10)===date;
+    if(!name || name.length>100 || !reward || reward.length>500)throw new Error('Give every chapter goal a name (up to 100 characters) and reward (up to 500 characters).');
+    if(!Number.isSafeInteger(target)||target<1||target>1000000000)throw new Error('Chapter goal targets must be whole numbers from 1 to 1,000,000,000.');
+    if(!validDate(start)||!validDate(end)||start>end)throw new Error('Each chapter goal needs valid start and end dates, with the end on or after the start.');
+    return {id,name,reward,target,start,end,visible:form.get(`goalVisible:${id}`)==='on'};
+  });
+}
+function chapterGoalProgress(goal) {
+  const today=todayISO();
+  // Future-dated records must not earn a reward before their date arrives.
+  const points=today<goal.start?0:totalPointsForRange(null,goal.start,today<goal.end?today:goal.end);
+  const reached=points>=goal.target;
+  return {points,reached,percent:Math.min(100,Math.max(0,points/goal.target*100)),remaining:Math.max(0,goal.target-points),status:today<goal.start?'Upcoming':today>goal.end?(reached?'Completed':'Ended'):reached?'Goal reached':'In progress'};
+}
+function renderChapterGoals() {
+  const goals=(systemSettings().chapterGoals||[]).filter(goal=>goal.visible!==false);
+  if(!goals.length)return '';
+  return `<section class="stack" aria-label="Chapter goals"><h2>Chapter Goals</h2><p class="muted">Chapter-wide progress for each goal’s dates, regardless of the member or week you’re viewing.</p>
+    ${goals.map(goal=>{const progress=chapterGoalProgress(goal);const name=escapeHtml(goal.name);return `<article class="panel stack">
+      <div class="section-head"><h3>${name}</h3><span class="badge ${progress.reached?'good':''}">${escapeHtml(progress.status)}</span></div>
+      <p><strong>Reward:</strong> ${escapeHtml(goal.reward).replace(/\n/g,'<br>')}</p>
+      <p class="muted">${escapeHtml(prettyDate(goal.start))} – ${escapeHtml(prettyDate(goal.end))}</p>
+      <progress max="100" value="${progress.percent}" style="width:100%;height:22px;accent-color:#caa951" aria-label="${name}: ${escapeHtml(progress.points)} of ${escapeHtml(goal.target)} chapter points">${Math.round(progress.percent)}%</progress>
+      <p><strong>${escapeHtml(progress.points.toLocaleString())} / ${escapeHtml(goal.target.toLocaleString())} points</strong> · ${Math.floor(progress.percent)}%</p>
+      <p>${progress.reached?'Target reached! Contact chapter leadership about the reward.':`${escapeHtml(progress.remaining.toLocaleString())} points ${progress.status==='Ended'?'short of the target when this goal ended.':'to reach this reward.'}`}</p>
+      </article>`;}).join('')}</section>`;
+}
+function bindChapterGoalSettings() {
+  const form=document.querySelector('#systemSettingsForm');
+  if(!form || currentMember()?.role!=='Admin')return;
+  form.querySelector('[data-add-chapter-goal]')?.addEventListener('click',()=>{
+    const range=getTermDateRange(getTerm(todayISO()));
+    form.querySelector('[data-chapter-goals]').insertAdjacentHTML('beforeend',chapterGoalFields({id:uid('goal'),start:range.start,end:range.end,visible:true}));
+    const rows=form.querySelectorAll('[data-chapter-goal-row]');rows[rows.length-1].querySelector('input:not([type="hidden"])').focus();
+  });
+  form.addEventListener('click',event=>{
+    const button=event.target.closest('[data-remove-chapter-goal]');
+    if(button && form.contains(button))button.closest('[data-chapter-goal-row]').remove();
+  });
 }
