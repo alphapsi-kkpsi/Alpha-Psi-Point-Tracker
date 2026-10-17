@@ -70,3 +70,14 @@ assert.equal(run(`getWeekRange('2026-08-02').start`),'2026-07-27');
 run('state.settings.weekStartsOn=0');assert.equal(run(`getWeekRange('2026-08-02').start`),'2026-08-02');
 run(`state.settings.executivePoints=false;state.members[1].role='Executive Member'`);assert.equal(run('allowedTabs(state.members[1]).some(x=>x.id==="points")'),false);assert.equal(run('canViewAllPoints(state.members[1])'),true);
 console.log('Settings/report tests passed: migrations, history snapshots, points, catalog archiving, validation, roles, report filters and calendar boundaries.');
+// Multi-member manual records keep individual IDs and shared details for both signs.
+for (const [type, actionId, points] of [['positive','helping-set-up',2],['negative','phone-out',-3]]) {
+  run(`var bulk=new FormData();bulk.append('memberId','admin');bulk.append('memberId','brother');bulk.append('memberId','brother');bulk.set('actionId','${actionId}');bulk.set('notes','Shared note');var batch=createPointRecords(bulk,currentMember(),'${type}');`);
+  assert.deepEqual(value('batch.map(r=>r.memberId)'),['admin','brother']);
+  assert.equal(run('new Set(batch.map(r=>r.id)).size'),2);
+  assert.equal(run(`batch.every(r=>r.points===${points}&&r.notes==='Shared note'&&r.recordingMemberId==='admin')`),true);
+}
+assert.throws(()=>run(`createPointRecords(new FormData(),currentMember(),'positive')`),/Select at least one/);
+run(`bulk.append('memberId','missing')`);
+assert.throws(()=>run(`createPointRecords(bulk,currentMember(),'negative')`),/no longer available/);
+console.log('Multi-member point record tests passed.');

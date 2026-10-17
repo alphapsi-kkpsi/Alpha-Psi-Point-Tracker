@@ -1341,17 +1341,16 @@ function renderSubmitPoints(member) {
     </div>
     <form id="pointForm" class="panel">
       <div class="form-grid">
-        <label class="field">
-          <span>Name</span>
-          <select name="memberId" required>
-            <option value="">Select member</option>
-            ${state.members
-              .slice()
-              .sort(memberSort)
-              .map((item) => `<option value="${item.id}">${escapeHtml(formatMember(item))}</option>`)
-              .join("")}
-          </select>
-        </label>
+        <fieldset class="stack">
+          <legend>Members</legend>
+          <p class="muted">Select one or more members. Each receives the same points and notes.</p>
+          ${state.members.slice().sort(memberSort).map((item) => `
+            <label class="check-row">
+              <input type="checkbox" name="memberId" value="${escapeHtml(item.id)}">
+              <span>${escapeHtml(formatMember(item))}</span>
+            </label>
+          `).join("")}
+        </fieldset>
         <label class="field">
           <span>Action</span>
           <select name="actionId" required>
@@ -2492,10 +2491,18 @@ function bindPointEvents(member) {
     event.preventDefault();
     if (!allowedTabs(currentMember()).some((tab) => tab.id === "points")) return;
     const form = new FormData(event.currentTarget);
-    const record = createPointRecord(form, member, view.pointMode);
-    state.pointRecords.push(record);
-    maybeCreateDiscretionAlert(record);
-    maybeCreateProbationAlert(record.memberId);
+    let records;
+    try {
+      records = createPointRecords(form, member, view.pointMode);
+    } catch (error) {
+      alert(error.message);
+      return;
+    }
+    state.pointRecords.push(...records);
+    for (const record of records) {
+      maybeCreateDiscretionAlert(record);
+      maybeCreateProbationAlert(record.memberId);
+    }
     saveState();
     view.pointMode = null;
     render();
@@ -3198,6 +3205,15 @@ function conditionalImpact(member, type, ruleId) {
 function ruleImpact(type, ruleId) {
   const rule = state.pointRules[type].find((item) => item.id === ruleId);
   return { points: Number(rule?.value || 0), action: rule?.name || ruleId };
+}
+
+function createPointRecords(form, recordingMember, type) {
+  const memberIds = [...new Set(form.getAll("memberId").map(String).filter(Boolean))];
+  if (!memberIds.length) throw new Error("Select at least one member.");
+  if (memberIds.some((id) => !state.members.some((member) => member.id === id))) {
+    throw new Error("A selected member is no longer available. Refresh and try again.");
+  }
+  return memberIds.map((memberId) => ({ ...createPointRecord(form, recordingMember, type), memberId }));
 }
 
 function createPointRecord(form, recordingMember, type) {
