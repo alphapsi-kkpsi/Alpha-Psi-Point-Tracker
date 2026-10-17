@@ -633,7 +633,7 @@ function renderContent(member) {
 }
 
 function renderTracker(member) {
-  if (view.fullReport) return renderFullRecordReport(member);
+  if (view.fullReport) return renderChapterGoals() + renderFullRecordReport(member);
   const path = view.trackerPath;
   const title = path.length ? path[path.length - 1].label : "Point Tracker";
   return `
@@ -651,6 +651,7 @@ function renderTracker(member) {
       </div>
     </div>
     ${path.length < 3 ? fullRecordReportButton(canViewAllPoints(member) ? view.trackerMemberId : member.id) : ""}
+    ${renderChapterGoals()}
     ${renderTrackerLevel(member)}
   `;
 }
@@ -3421,6 +3422,13 @@ function helpSections(member) {
       'Save the editor and verify the choices under Submit Points. Settings also provides point-rule editing.',
       'Rule changes apply when future records are created or attendance is recalculated during an edit. Stored manual point records retain their recorded amounts.'
     ], 'For fundraiser rules, the late and absence values apply per required shift, and the extra-shift value applies per extra shift.');
+    add('goals', 'Admin functions', 'Set chapter goals and rewards', 'Admin → Settings → Chapter goals & rewards', ['Add chapter goal → name and point target', 'Type reward → choose start and end dates', 'Save Settings → Point Tracker progress'], [
+      'Open Settings, expand Chapter goals & rewards, and select Add chapter goal. You can create multiple targets.',
+      'Enter a goal name, a positive whole-number chapter point target, and the reward the chapter earns.',
+      'Choose the inclusive dates for counting points. New goals start with the current semester’s date range. Leave Show on Point Tracker checked to display it to all roles.',
+      'Select Save Settings. Open Point Tracker to see chapter-wide net progress, remaining points, and the goal status. Progress uses the goal’s dates rather than the week or member currently viewed.',
+      'Edit a goal or uncheck its display option in Settings. Remove goal deletes its configuration when you save; it does not delete any point records.'
+    ], 'Deductions and corrections can lower progress again. Future-dated points do not count early. Reaching the target displays a status; leadership arranges the reward.');
     add('settings', 'Admin functions', 'Configure the tracker for future executive teams', 'Admin → Settings (after Member Info & Permissions)', ['Chapter & calendar | Fundraiser attendance', 'Conditional members | Access & visibility', 'Ensembles | Committees | Point rules'], [
       'Open Settings and expand the relevant section. Read the field guidance before changing a value.',
       'Chapter & calendar controls the chapter name, alert email, semester boundary, week start, and recurring business meeting schedule.',
