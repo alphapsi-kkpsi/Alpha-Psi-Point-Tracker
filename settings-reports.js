@@ -319,9 +319,9 @@ function renderChapterGoals() {
       <div class="section-head"><h3>${name}</h3><span class="badge ${progress.reached?'good':''}">${escapeHtml(progress.status)}</span></div>
       <p><strong>Reward:</strong> ${escapeHtml(goal.reward).replace(/\n/g,'<br>')}</p>
       <p class="muted">${escapeHtml(prettyDate(goal.start))} – ${escapeHtml(prettyDate(goal.end))}</p>
-      <progress max="100" value="${progress.percent}" style="width:100%;height:22px;accent-color:#caa951" aria-label="${name}: ${escapeHtml(progress.points)} of ${escapeHtml(goal.target)} chapter points">${Math.round(progress.percent)}%</progress>
+      <progress max="100" value="${progress.percent}" style="width:100%;height:22px;accent-color:hsl(${Math.round(progress.percent * 1.2)}, 75%, 40%)" aria-label="${name}: ${escapeHtml(progress.points)} of ${escapeHtml(goal.target)} chapter points">${Math.round(progress.percent)}%</progress>
       <p><strong>${escapeHtml(progress.points.toLocaleString())} / ${escapeHtml(goal.target.toLocaleString())} points</strong> · ${Math.floor(progress.percent)}%</p>
-      <p>${progress.reached?'Target reached! Contact chapter leadership about the reward.':`${escapeHtml(progress.remaining.toLocaleString())} points ${progress.status==='Ended'?'short of the target when this goal ended.':'to reach this reward.'}`}</p>
+      <p>${progress.reached?'Target reached! Great work!':`${escapeHtml(progress.remaining.toLocaleString())} points ${progress.status==='Ended'?'short of the target when this goal ended.':'to reach this reward.'}`}</p>
       </article>`;}).join('')}</section>`;
 }
 function bindChapterGoalSettings() {
