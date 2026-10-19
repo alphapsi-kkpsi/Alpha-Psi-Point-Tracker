@@ -1007,3 +1007,19 @@ th {
 .period-download { margin-bottom: 12px; }
 .report-filters { margin-bottom: 18px; }
 @media (max-width: 560px) { .catalog-row { grid-template-columns: 1fr; } }
+
+
+/* Live quorum feedback while recording business meeting attendance. */
+.business-quorum {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid;
+  border-radius: 0.75rem;
+  margin: 0.6rem 0 1rem;
+}
+.business-quorum strong { font-weight: 750; font-size: 1.05rem; }
+.business-quorum span { font-size: 0.9rem; line-height: 1.45; }
+.business-quorum-met { color: #12623d; background: #e8f7ed; border-color: #8cceaa; }
+.business-quorum-unmet { color: #9c2932; background: #fff0f0; border-color: #e4a4a7; }
