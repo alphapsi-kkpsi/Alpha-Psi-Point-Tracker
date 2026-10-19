@@ -1204,7 +1204,7 @@ function renderAttendanceEventForm(member, event) {
         <span>Date</span>
         <input name="date" type="date" value="${eventDate}" ${event.date ? "readonly" : ""} ${locked ? "disabled" : ""}>
       </label>
-      ${event.eventKind === "business" ? renderBusinessQuorumStatus(selectedStatuses) : ""}
+      ${event.eventKind === "business" ? renderBusinessQuorumStatus(selectedStatuses) + '<p class="muted">If quorum is not met, the meeting attendance will be saved but no points will be awarded or deducted.</p>' : ""}
       ${event.eventKind === "fundraiser" ? renderFundraiserAttendanceTable(members, existing, locked) : `<div class="table-wrap">
         <table>
           <thead><tr><th>Member</th><th>Status</th></tr></thead>
@@ -1309,6 +1309,7 @@ function renderAttendanceSubmissionSummary(record) {
   return `
     <section class="panel tight">
       <h3>Submitted Record</h3>
+      ${record.eventKind === "business" && record.quorumMet === false ? '<p class="notice">Quorum Not Met — attendance recorded, with no points awarded or deducted for this meeting.</p>' : ""}
       <div class="table-wrap">
         <table>
           <thead><tr><th>Member</th><th>Status</th><th>Points</th><th>Record</th></tr></thead>
@@ -3133,6 +3134,11 @@ function updateAttendanceRecordFromForm(form, editingMember) {
   record.notes = String(form.get("notes") || "").trim();
   record.statuses = statusesForMembers;
   record.points = attendancePointImpacts(event, statusesForMembers);
+  if (event.eventKind === "business") {
+    const quorum = calculateBusinessQuorum(new Map(statusesForMembers.map(entry => [entry.memberId, entry.status])));
+    record.quorumMet = quorum.met;
+    record.quorumSnapshot = quorum;
+  }
   record.approvedLetterMemberIds = retainedAttendanceLetterApprovals(previous, record);
   record.updatedAt = new Date().toISOString();
   record.updatedByMemberId = editingMember.id;
@@ -3160,6 +3166,10 @@ function createAttendanceRecord(form, recordingMember) {
     notes: String(form.get("notes") || "").trim(),
     statuses: statusesForMembers,
     points: attendancePointImpacts(event, statusesForMembers),
+    ...(event.eventKind === "business" ? (() => {
+      const quorum = calculateBusinessQuorum(new Map(statusesForMembers.map(entry => [entry.memberId, entry.status])));
+      return { quorumMet: quorum.met, quorumSnapshot: quorum };
+    })() : {}),
     recordingMemberId: recordingMember.id,
     createdAt: new Date().toISOString(),
   };
@@ -3191,6 +3201,11 @@ function attendanceStatusesFromForm(form, event) {
 }
 
 function attendancePointImpacts(event, statusesForMembers) {
+  // A business meeting without quorum has no point impact for any attendee or absentee.
+  // The attendance statuses themselves are still saved as a meeting record.
+  if (event.eventKind === "business" && !calculateBusinessQuorum(
+    new Map(statusesForMembers.map(entry => [entry.memberId, entry.status]))
+  ).met) return [];
   const impacts = [];
   for (const entry of statusesForMembers) {
     const member = state.members.find((item) => item.id === entry.memberId);
