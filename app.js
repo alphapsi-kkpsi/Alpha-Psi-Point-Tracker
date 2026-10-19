@@ -1134,6 +1134,7 @@ function slug(value) {
 function calculateBusinessQuorum(statuses) {
   const rules = systemSettings();
   const active = state.members.filter(member => member.status === "Active");
+  const conditional = state.members.filter(member => member.status === "Conditional");
   const requiredMembers = Math.ceil(active.length * Number(rules.businessQuorumPercent ?? 50) / 100);
   const requiredExecutives = Number(rules.businessQuorumExecutiveCount ?? 2);
   const attendees = active.filter(member => ["Present", "Late"].includes(statuses.get(member.id)));
@@ -1145,6 +1146,9 @@ function calculateBusinessQuorum(statuses) {
     executiveAttended: executives.length,
     requiredExecutives,
     activeCount: active.length,
+    conditionalCount: conditional.length,
+    conditionalAttended: conditional.filter(member => ["Present", "Late"].includes(statuses.get(member.id))).length,
+    totalCount: active.length + conditional.length,
   };
 }
 
@@ -1154,6 +1158,7 @@ function renderBusinessQuorumStatus(statuses) {
   return `<div class="business-quorum ${result.met ? "business-quorum-met" : "business-quorum-unmet"}" data-business-quorum role="status" aria-live="polite" aria-atomic="true">
     <strong data-business-quorum-label>${label}</strong>
     <span data-business-quorum-detail>${result.attended} of ${result.requiredMembers} required active members attending (${result.activeCount} active total) · ${result.executiveAttended} of ${result.requiredExecutives} required executive officers attending</span>
+    <span data-business-membership-totals>Active members: ${result.activeCount} (${result.attended} attending) · Conditional members: ${result.conditionalCount} (${result.conditionalAttended} attending) · Total members: ${result.totalCount}</span>
   </div>`;
 }
 
@@ -1170,6 +1175,10 @@ function updateBusinessQuorumStatus(form) {
   indicator.querySelector("[data-business-quorum-detail]").textContent =
     result.attended + " of " + result.requiredMembers + " required active members attending (" + result.activeCount + " active total) · " +
     result.executiveAttended + " of " + result.requiredExecutives + " required executive officers attending";
+  indicator.querySelector("[data-business-membership-totals]").textContent =
+    "Active members: " + result.activeCount + " (" + result.attended + " attending) · " +
+    "Conditional members: " + result.conditionalCount + " (" + result.conditionalAttended + " attending) · " +
+    "Total members: " + result.totalCount;
 }
 
 function renderAttendanceEventForm(member, event) {
