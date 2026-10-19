@@ -1129,6 +1129,49 @@ function slug(value) {
     .replace(/^-|-$/g, "");
 }
 
+// Business quorum is calculated from the current active roster and recorded selections.
+// Late counts as attending; Conditional members are excluded from the active denominator.
+function calculateBusinessQuorum(statuses) {
+  const rules = systemSettings();
+  const active = state.members.filter(member => member.status === "Active");
+  const requiredMembers = Math.ceil(active.length * Number(rules.businessQuorumPercent ?? 50) / 100);
+  const requiredExecutives = Number(rules.businessQuorumExecutiveCount ?? 2);
+  const attendees = active.filter(member => ["Present", "Late"].includes(statuses.get(member.id)));
+  const executives = attendees.filter(member => member.role === "Admin" || member.role === "Executive Member");
+  return {
+    met: attendees.length >= requiredMembers && executives.length >= requiredExecutives,
+    attended: attendees.length,
+    requiredMembers,
+    executiveAttended: executives.length,
+    requiredExecutives,
+    activeCount: active.length,
+  };
+}
+
+function renderBusinessQuorumStatus(statuses) {
+  const result = calculateBusinessQuorum(statuses);
+  const label = result.met ? "Quorum Met" : "Quorum Not Met";
+  return `<div class="business-quorum ${result.met ? "business-quorum-met" : "business-quorum-unmet"}" data-business-quorum role="status" aria-live="polite" aria-atomic="true">
+    <strong data-business-quorum-label>${label}</strong>
+    <span data-business-quorum-detail>${result.attended} of ${result.requiredMembers} required active members attending (${result.activeCount} active total) · ${result.executiveAttended} of ${result.requiredExecutives} required executive officers attending</span>
+  </div>`;
+}
+
+function updateBusinessQuorumStatus(form) {
+  const indicator = form?.querySelector("[data-business-quorum]");
+  if (!indicator || form.querySelector('[name="eventKind"]')?.value !== "business") return;
+  const selections = new Map(state.members.map(member => [
+    member.id, form.elements.namedItem("status:" + member.id)?.value || "",
+  ]));
+  const result = calculateBusinessQuorum(selections);
+  indicator.classList.toggle("business-quorum-met", result.met);
+  indicator.classList.toggle("business-quorum-unmet", !result.met);
+  indicator.querySelector("[data-business-quorum-label]").textContent = result.met ? "Quorum Met" : "Quorum Not Met";
+  indicator.querySelector("[data-business-quorum-detail]").textContent =
+    result.attended + " of " + result.requiredMembers + " required active members attending (" + result.activeCount + " active total) · " +
+    result.executiveAttended + " of " + result.requiredExecutives + " required executive officers attending";
+}
+
 function renderAttendanceEventForm(member, event) {
   const eventDate = event.date || todayISO();
   const existing = state.attendanceRecords.find(
@@ -1152,6 +1195,7 @@ function renderAttendanceEventForm(member, event) {
         <span>Date</span>
         <input name="date" type="date" value="${eventDate}" ${event.date ? "readonly" : ""} ${locked ? "disabled" : ""}>
       </label>
+      ${event.eventKind === "business" ? renderBusinessQuorumStatus(selectedStatuses) : ""}
       ${event.eventKind === "fundraiser" ? renderFundraiserAttendanceTable(members, existing, locked) : `<div class="table-wrap">
         <table>
           <thead><tr><th>Member</th><th>Status</th></tr></thead>
@@ -2452,6 +2496,13 @@ function bindAttendanceEvents(member) {
     render();
   });
   bindSegmentButtons("status-group", "status-choice");
+  const quorumForm = document.querySelector("#attendanceForm");
+  if (quorumForm?.querySelector("[data-business-quorum]")) {
+    quorumForm.addEventListener("click", event => {
+      if (event.target.closest("[data-status-choice]")) updateBusinessQuorumStatus(quorumForm);
+    });
+    updateBusinessQuorumStatus(quorumForm);
+  }
 
   document.querySelector("#attendanceForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
