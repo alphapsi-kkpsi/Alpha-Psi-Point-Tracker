@@ -4,6 +4,7 @@ function defaultSystemSettings() {
     chapterGoals: [],
     version: 1, chapterName: "Alpha Psi Point Tracker", alertEmail: "alphapsi@kkpsi.org",
     requiredFundraiserShifts: 2, fundraisersMandatory: true, extraShiftsEnabled: true,
+    businessQuorumPercent: 50, businessQuorumExecutiveCount: 2,
     conditionalAbsenceExempt: true, conditionalLateExempt: true, conditionalCleanStart: true,
     probationEnabled: true, probationThreshold: -50, emailPromptsEnabled: true,
     executiveAttendance: true, executivePoints: true, defaultFunctionMandatory: true,
@@ -50,6 +51,10 @@ function renderSystemSettings() {
         <label class="field"><span>First day of each week</span><select name="weekStartsOn">${weekDays.map((day,index)=>`<option value="${index}" ${index===s.weekStartsOn?'selected':''}>${day}</option>`).join('')}</select></label>
         <label class="field"><span>Recurring business meeting day</span><select name="businessDay">${weekDays.map((day,index)=>`<option value="${index}" ${index===s.businessDay?'selected':''}>${day}</option>`).join('')}</select></label>
         <label class="field"><span>Recurring business meeting time</span><input type="time" name="businessTime" value="${escapeHtml(s.businessTime)}" required></label>
+      </div></details>
+      <details class="panel" open><summary>Business meeting quorum</summary><div class="settings-fields">
+        ${settingsNumber("businessQuorumPercent","Minimum active membership percentage",s.businessQuorumPercent,0,100,"The required headcount is rounded up. Only Active members count in the denominator or toward quorum.")}
+        ${settingsNumber("businessQuorumExecutiveCount","Minimum executive officers present",s.businessQuorumExecutiveCount,0,100,"Counts Active Admin and Executive Member roles. Present and Late count as attending. Both requirements must be met.")}
       </div></details>
       <details class="panel" open><summary>Fundraiser attendance</summary><div class="settings-fields">
         ${settingsNumber("requiredFundraiserShifts","Shifts to record per member",s.requiredFundraiserShifts,1,20,"Each shift has its own Present, Absent, and Late buttons. Changes apply to new records.")}
@@ -101,6 +106,8 @@ function parseSettingsForm(form) {
   if(!next.chapterName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(next.alertEmail)) throw new Error('Enter a chapter name and valid alert email address.');
   for(const name of ['fundraisersMandatory','extraShiftsEnabled','conditionalAbsenceExempt','conditionalLateExempt','conditionalCleanStart','probationEnabled','emailPromptsEnabled','executiveAttendance','executivePoints','defaultFunctionMandatory']) next[name]=form.get(name)==='on';
   next.requiredFundraiserShifts=integer('requiredFundraiserShifts',1,20);
+  next.businessQuorumPercent=integer('businessQuorumPercent',0,100);
+  next.businessQuorumExecutiveCount=integer('businessQuorumExecutiveCount',0,100);
   next.probationThreshold=integer('probationThreshold',-10000,-1);
   next.fallStartMonth=integer('fallStartMonth',2,12);next.weekStartsOn=integer('weekStartsOn',0,6);next.businessDay=integer('businessDay',0,6);
   next.businessTime=text('businessTime');if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(next.businessTime))throw new Error('Enter a valid business meeting time.');
