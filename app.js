@@ -2795,6 +2795,7 @@ function bindModalEvents(member) {
       if (alert) {
         alert.acknowledged = true;
         alert.emailOpenedAt = new Date().toISOString();
+        alert.emailDispatchedAt = alert.emailOpenedAt;
         saveState();
       }
     });
