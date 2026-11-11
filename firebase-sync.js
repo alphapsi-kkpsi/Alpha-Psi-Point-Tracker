@@ -2,6 +2,8 @@
   const APP_KEY = "alphaPsiPointTrackerStateV1";
   const SESSION_KEY = "alphaPsiPointTrackerSessionV1";
   const CLIENT_ID_KEY = "alphaPsiFirebaseClientIdV1";
+  const PENDING_KEY = "alphaPsiCloudPendingV2";
+  const BASE_KEY = "alphaPsiCloudBaseV2";
   const firebaseAuth = window.firebase?.auth ? firebase.auth() : null;
   const firebaseDb = window.firebase?.firestore ? firebase.firestore() : null;
   if (!firebaseAuth || !firebaseDb) return;
@@ -12,6 +14,8 @@
   let applyingCloudState = false;
   let writeTimer = null;
   let unsubscribe = null;
+  let writeInFlight = false;
+  let initialized = false;
 
   let clientId = sessionStorage.getItem(CLIENT_ID_KEY);
   if (!clientId) {
@@ -73,6 +77,114 @@
         .join(",")}}`;
     }
     return JSON.stringify(value);
+  }
+
+
+  function same(a, b) {
+    return stableStringify(a) === stableStringify(b);
+  }
+
+  function baseline() {
+    try { return JSON.parse(localStorage.getItem(BASE_KEY) || "null"); }
+    catch { return null; }
+  }
+
+  function setBaseline(value) {
+    if (value) localStorage.setItem(BASE_KEY, JSON.stringify(cloudComparableState(value)));
+  }
+
+  function isPending() {
+    return localStorage.getItem(PENDING_KEY) === "1";
+  }
+
+  function markPending() {
+    localStorage.setItem(PENDING_KEY, "1");
+    setSyncIndicator("pending");
+  }
+
+  function setSyncIndicator(status, error) {
+    let indicator = document.querySelector("#chapterSyncIndicator");
+    if (!indicator && document.body) {
+      indicator = document.createElement("div");
+      indicator.id = "chapterSyncIndicator";
+      indicator.setAttribute("role", "status");
+      indicator.style.cssText = "position:fixed;left:12px;bottom:72px;z-index:10000;padding:8px 12px;border-radius:8px;font:13px system-ui,sans-serif;box-shadow:0 2px 10px #0002;max-width:min(90vw,430px)";
+      document.body.appendChild(indicator);
+    }
+    if (!indicator) return;
+    indicator.hidden = status === "synced";
+    indicator.style.background = status === "error" ? "#fff0ee" : "#fff8da";
+    indicator.style.color = status === "error" ? "#9b1c1c" : "#644500";
+    indicator.textContent = status === "error"
+      ? "Cloud save failed. Your changes are retained on this device; reconnect and retry. " + (error?.message || "")
+      : status === "offline"
+      ? "Offline — changes saved on this device, waiting to sync."
+      : status === "pending" ? "Saving changes to cloud…" : "";
+  }
+
+  // Three-way merge: apply changes made since this device's last acknowledged
+  // cloud state onto the newest server state. This protects independent edits
+  // and attendance records saved on other devices from whole-document clobbering.
+  const keyedCollections = new Set([
+    "members", "attendanceRecords", "pointRecords", "functions",
+    "fundraisers", "customBandEnsembles", "customCommittees",
+    "extraBusinessMeetings", "alerts", "chapterGoals",
+  ]);
+
+  function mergeValue(base, local, remote, key = "") {
+    if (same(local, base)) return remote;
+    if (same(remote, base)) return local;
+    if (same(local, remote)) return local;
+    if (Array.isArray(local) && Array.isArray(remote) &&
+        keyedCollections.has(key) && local.every(x => x && x.id) && remote.every(x => x && x.id)) {
+      const old = new Map((Array.isArray(base) ? base : []).filter(x => x && x.id).map(x => [x.id, x]));
+      const own = new Map(local.map(x => [x.id, x]));
+      const their = new Map(remote.map(x => [x.id, x]));
+      const merged = [];
+      for (const id of new Set([...old.keys(), ...their.keys(), ...own.keys()])) {
+        const original = old.get(id), ours = own.get(id), theirs = their.get(id);
+        if (!own.has(id) && old.has(id)) {
+          // Retain a concurrent remote edit rather than erasing it.
+          if (their.has(id) && !same(theirs, original)) merged.push(theirs);
+          continue;
+        }
+        if (!their.has(id) && old.has(id)) {
+          if (own.has(id) && !same(ours, original)) merged.push(ours);
+          continue;
+        }
+        if (!own.has(id)) { if (their.has(id)) merged.push(theirs); continue; }
+        if (!their.has(id)) { merged.push(ours); continue; }
+        merged.push(mergeValue(original, ours, theirs, ""));
+      }
+      return merged;
+    }
+    if (local && remote && typeof local === "object" && typeof remote === "object" &&
+        !Array.isArray(local) && !Array.isArray(remote)) {
+      const output = {};
+      for (const field of new Set([...Object.keys(base || {}), ...Object.keys(local), ...Object.keys(remote)])) {
+        const original = base?.[field];
+        const ours = local[field], theirs = remote[field];
+        if (!(field in local) && field in (base || {})) {
+          if (field in remote && !same(theirs, original)) output[field] = theirs;
+          continue;
+        }
+        if (!(field in remote) && field in (base || {})) {
+          if (field in local && !same(ours, original)) output[field] = ours;
+          continue;
+        }
+        if (!(field in local)) { output[field] = theirs; continue; }
+        if (!(field in remote)) { output[field] = ours; continue; }
+        output[field] = mergeValue(original, ours, theirs, field);
+      }
+      return output;
+    }
+    // For a simultaneous edit of one scalar, prefer this device's explicit edit.
+    return local;
+  }
+
+  function mergeChapterState(base, local, remote) {
+    const merged = mergeValue(base || {}, cloudComparableState(local) || {}, cloudComparableState(remote) || {});
+    return { ...merged, loginCredentials: local?.loginCredentials || [] };
   }
 
   function findMember(state, email, buffId) {
