@@ -273,75 +273,148 @@
     await batch.commit();
   }
 
+
   function queueCloudWrite() {
-    if (applyingCloudState || !firebaseAuth.currentUser || !hasAppSession()) return;
+    if (applyingCloudState) return;
+    // Mark a local edit as not yet acknowledged even while offline or signed out.
+    markPending();
+    if (!firebaseAuth.currentUser || !hasAppSession()) return;
     clearTimeout(writeTimer);
-    writeTimer = setTimeout(async () => {
-      const localState = readLocalState();
-      if (!localState) return;
-      try {
-        await cloudRef.set(
-          {
-            state: cloudComparableState(localState),
-            updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-            updatedBy: firebaseAuth.currentUser.uid,
-            updatedByClient: clientId,
-          },
-          { merge: true },
-        );
-        await syncEnrollmentRegistry(localState);
-      } catch (error) {
-        console.error("Firebase state sync failed:", error);
+    writeTimer = setTimeout(() => flushCloudWrite(), 500);
+  }
+
+  async function flushCloudWrite() {
+    if (writeInFlight || !isPending() || !firebaseAuth.currentUser || !hasAppSession()) return;
+    const submitted = readLocalState();
+    if (!submitted) return;
+    const prior = baseline();
+    writeInFlight = true;
+    try {
+      // Transaction retries if another browser commits in between our read and
+      // write, so our snapshot never blindly erases that browser's records.
+      const merged = await firebaseDb.runTransaction(async transaction => {
+        const snapshot = await transaction.get(cloudRef);
+        const remote = snapshot.data()?.state || {};
+        const next = mergeChapterState(prior, submitted, remote);
+        // Do not synchronize client-only authentication credentials.
+        transaction.set(cloudRef, {
+          state: cloudComparableState(next),
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          updatedBy: firebaseAuth.currentUser.uid,
+          updatedByClient: clientId,
+        }, { merge: true });
+        return next;
+      });
+
+      setBaseline(merged);
+      const current = readLocalState();
+      if (same(cloudComparableState(current), cloudComparableState(submitted))) {
+        writeLocalState({ ...merged, loginCredentials: current?.loginCredentials || [] });
+        localStorage.removeItem(PENDING_KEY);
+        setSyncIndicator("synced");
+        // A new member may need an enrollment entry; failure there must not
+        // misreport a successfully committed chapter state as a failed save.
+        syncEnrollmentRegistry(readLocalState()).catch(error =>
+          console.error("Enrollment sync failed:", error));
+      } else {
+        // A new edit arrived during the transaction. Keep it and start another
+        // transaction against the just-committed baseline.
+        const rebased = mergeChapterState(submitted, current, merged);
+        writeLocalState(rebased);
+        markPending();
       }
-    }, 400);
+    } catch (error) {
+      console.error("Firebase state sync failed:", error);
+      markPending();
+      setSyncIndicator(navigator.onLine ? "error" : "offline", error);
+    } finally {
+      writeInFlight = false;
+      if (isPending() && navigator.onLine && firebaseAuth.currentUser && hasAppSession()) {
+        // Retry on the next reconnection/change instead of a tight failure loop.
+        clearTimeout(writeTimer);
+        writeTimer = setTimeout(() => flushCloudWrite(), 10000);
+      }
+    }
   }
 
   async function loadCloudState() {
-    const snapshot = await cloudRef.get();
+    const snapshot = await cloudRef.get({ source: "server" });
     const cloudState = snapshot.data()?.state;
-    if (cloudState) {
-      writeLocalState(cloudState);
-      return cloudState;
+    if (!cloudState) return null;
+    if (isPending()) {
+      // An offline submission must survive a login or page refresh even if the
+      // server still has the older chapter document.
+      const combined = mergeChapterState(baseline(), readLocalState(), cloudState);
+      writeLocalState(combined);
+      return combined;
     }
-    return null;
+    setBaseline(cloudState);
+    const old = readLocalState();
+    writeLocalState({ ...cloudState, loginCredentials: old?.loginCredentials || [] });
+    return cloudState;
   }
 
   async function initializeRealtimeSync(user) {
     if (!user || !hasAppSession()) return;
     if (unsubscribe) unsubscribe();
-
     try {
       const cloudState = await loadCloudState();
-      if (!cloudState) {
+      initialized = true;
+      if (!cloudState || isPending()) {
         queueCloudWrite();
       } else {
-        await syncEnrollmentRegistry(readLocalState());
+        syncEnrollmentRegistry(readLocalState()).catch(error =>
+          console.error("Enrollment sync failed:", error));
       }
 
       unsubscribe = cloudRef.onSnapshot(
+        { includeMetadataChanges: true },
         (snapshot) => {
           if (!hasAppSession()) return;
-
+          if (snapshot.metadata.hasPendingWrites || snapshot.metadata.fromCache) return;
           const data = snapshot.data();
           const nextState = data?.state;
           if (!nextState) return;
-
-          if (snapshot.metadata.hasPendingWrites || data?.updatedByClient === clientId) {
+          if (isPending() || writeInFlight) {
+            // Pending local edits will be rebased on the newest remote state
+            // in a transaction; never overwrite them with a notification.
+            if (!writeInFlight) queueCloudWrite();
             return;
           }
-
           const currentState = readLocalState();
-          const currentComparable = stableStringify(cloudComparableState(currentState));
-          const incomingComparable = stableStringify(cloudComparableState(nextState));
-          if (currentComparable === incomingComparable) return;
-
-          writeLocalState(nextState);
+          if (same(cloudComparableState(currentState), cloudComparableState(nextState))) {
+            setBaseline(nextState);
+            return;
+          }
+          setBaseline(nextState);
+          writeLocalState({ ...nextState, loginCredentials: currentState?.loginCredentials || [] });
           window.location.reload();
         },
-        (error) => console.error("Firebase realtime sync failed:", error),
+        (error) => {
+          console.error("Firebase realtime sync failed:", error);
+          if (isPending()) setSyncIndicator("error", error);
+        },
       );
     } catch (error) {
       console.error("Firebase cloud initialization failed:", error);
+      if (isPending()) setSyncIndicator(navigator.onLine ? "error" : "offline", error);
+    }
+  }
+
+  window.addEventListener("online", () => {
+    if (isPending()) {
+      setSyncIndicator("pending");
+      if (firebaseAuth.currentUser && hasAppSession()) flushCloudWrite();
+    }
+  });
+  window.addEventListener("offline", () => {
+    if (isPending()) setSyncIndicator("offline");
+  });
+  if (isPending()) {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", () => setSyncIndicator(navigator.onLine ? "pending" : "offline"), { once: true });
+    } else {
+      setSyncIndicator(navigator.onLine ? "pending" : "offline");
     }
   }
 
