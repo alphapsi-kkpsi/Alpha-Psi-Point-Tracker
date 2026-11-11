@@ -312,10 +312,14 @@
         writeLocalState({ ...merged, loginCredentials: current?.loginCredentials || [] });
         localStorage.removeItem(PENDING_KEY);
         setSyncIndicator("synced");
+        // The tracker also holds a live in-memory state. Refresh it whenever
+        // the transaction incorporated records from another device.
+        const receivedOtherChanges = !same(cloudComparableState(merged), cloudComparableState(submitted));
         // A new member may need an enrollment entry; failure there must not
         // misreport a successfully committed chapter state as a failed save.
         syncEnrollmentRegistry(readLocalState()).catch(error =>
           console.error("Enrollment sync failed:", error));
+        if (receivedOtherChanges) window.location.reload();
       } else {
         // A new edit arrived during the transaction. Keep it and start another
         // transaction against the just-committed baseline.
